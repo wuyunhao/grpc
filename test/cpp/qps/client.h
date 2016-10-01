@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,9 @@
 #include <mutex>
 #include <vector>
 
+#include <grpc++/channel.h>
 #include <grpc++/support/byte_buffer.h>
+#include <grpc++/support/channel_arguments.h>
 #include <grpc++/support/slice.h>
 #include <grpc/support/log.h>
 #include <grpc/support/time.h>
@@ -46,10 +48,10 @@
 #include "src/proto/grpc/testing/payloads.grpc.pb.h"
 #include "src/proto/grpc/testing/services.grpc.pb.h"
 
-#include "test/cpp/qps/limit_cores.h"
 #include "test/cpp/qps/histogram.h"
 #include "test/cpp/qps/interarrival.h"
-#include "test/cpp/qps/timer.h"
+#include "test/cpp/qps/limit_cores.h"
+#include "test/cpp/qps/usage_timer.h"
 #include "test/cpp/util/create_test_channel.h"
 
 namespace grpc {
@@ -110,14 +112,36 @@ class ClientRequestCreator<ByteBuffer> {
   }
 };
 
+class HistogramEntry GRPC_FINAL {
+ public:
+  HistogramEntry() : used_(false) {}
+  bool used() const { return used_; }
+  double value() const { return value_; }
+  void set_value(double v) {
+    used_ = true;
+    value_ = v;
+  }
+
+ private:
+  bool used_;
+  double value_;
+};
+
 class Client {
  public:
-  Client() : timer_(new Timer), interarrival_timer_() {}
+  Client()
+      : timer_(new UsageTimer),
+        interarrival_timer_(),
+        started_requests_(false) {
+    gpr_event_init(&start_requests_);
+  }
   virtual ~Client() {}
 
   ClientStats Mark(bool reset) {
     Histogram latencies;
-    Timer::Result timer_result;
+    UsageTimer::Result timer_result;
+
+    MaybeStartRequests();
 
     // avoid std::vector for old compilers that expect a copy constructor
     if (reset) {
@@ -125,7 +149,7 @@ class Client {
       for (size_t i = 0; i < threads_.size(); i++) {
         threads_[i]->BeginSwap(&to_merge[i]);
       }
-      std::unique_ptr<Timer> timer(new Timer);
+      std::unique_ptr<UsageTimer> timer(new UsageTimer);
       timer_.swap(timer);
       for (size_t i = 0; i < threads_.size(); i++) {
         threads_[i]->EndSwap();
@@ -149,18 +173,36 @@ class Client {
     return stats;
   }
 
+  // Must call AwaitThreadsCompletion before destructor to avoid a race
+  // between destructor and invocation of virtual ThreadFunc
+  void AwaitThreadsCompletion() {
+    gpr_atm_rel_store(&thread_pool_done_, static_cast<gpr_atm>(true));
+    DestroyMultithreading();
+    std::unique_lock<std::mutex> g(thread_completion_mu_);
+    while (threads_remaining_ != 0) {
+      threads_complete_.wait(g);
+    }
+  }
+
  protected:
   bool closed_loop_;
+  gpr_atm thread_pool_done_;
 
   void StartThreads(size_t num_threads) {
+    gpr_atm_rel_store(&thread_pool_done_, static_cast<gpr_atm>(false));
+    threads_remaining_ = num_threads;
     for (size_t i = 0; i < num_threads; i++) {
       threads_.emplace_back(new Thread(this, i));
     }
   }
 
-  void EndThreads() { threads_.clear(); }
+  void EndThreads() {
+    MaybeStartRequests();
+    threads_.clear();
+  }
 
-  virtual bool ThreadFunc(Histogram* histogram, size_t thread_idx) = 0;
+  virtual void DestroyMultithreading() = 0;
+  virtual bool ThreadFunc(HistogramEntry* histogram, size_t thread_idx) = 0;
 
   void SetupLoadTest(const ClientConfig& config, size_t num_threads) {
     // Set up the load distribution based on the number of threads
@@ -174,20 +216,6 @@ class Client {
       case LoadParams::kPoisson:
         random_dist.reset(
             new ExpDist(load.poisson().offered_load() / num_threads));
-        break;
-      case LoadParams::kUniform:
-        random_dist.reset(
-            new UniformDist(load.uniform().interarrival_lo() * num_threads,
-                            load.uniform().interarrival_hi() * num_threads));
-        break;
-      case LoadParams::kDeterm:
-        random_dist.reset(
-            new DetDist(num_threads / load.determ().offered_load()));
-        break;
-      case LoadParams::kPareto:
-        random_dist.reset(
-            new ParetoDist(load.pareto().interarrival_base() * num_threads,
-                           load.pareto().alpha()));
         break;
       default:
         GPR_ASSERT(false);
@@ -226,31 +254,16 @@ class Client {
   class Thread {
    public:
     Thread(Client* client, size_t idx)
-        : done_(false),
-          new_stats_(nullptr),
-          client_(client),
-          idx_(idx),
-          impl_(&Thread::ThreadFunc, this) {}
+        : client_(client), idx_(idx), impl_(&Thread::ThreadFunc, this) {}
 
-    ~Thread() {
-      {
-        std::lock_guard<std::mutex> g(mu_);
-        done_ = true;
-      }
-      impl_.join();
-    }
+    ~Thread() { impl_.join(); }
 
     void BeginSwap(Histogram* n) {
       std::lock_guard<std::mutex> g(mu_);
-      new_stats_ = n;
+      n->Swap(&histogram_);
     }
 
-    void EndSwap() {
-      std::unique_lock<std::mutex> g(mu_);
-      while (new_stats_ != nullptr) {
-        cv_.wait(g);
-      };
-    }
+    void EndSwap() {}
 
     void MergeStatsInto(Histogram* hist) {
       std::unique_lock<std::mutex> g(mu_);
@@ -262,31 +275,34 @@ class Client {
     Thread& operator=(const Thread&);
 
     void ThreadFunc() {
+      while (!gpr_event_wait(
+          &client_->start_requests_,
+          gpr_time_add(gpr_now(GPR_CLOCK_REALTIME),
+                       gpr_time_from_seconds(1, GPR_TIMESPAN)))) {
+        gpr_log(GPR_INFO, "Waiting for benchmark to start");
+      }
+
       for (;;) {
         // run the loop body
-        const bool thread_still_ok = client_->ThreadFunc(&histogram_, idx_);
-        // lock, see if we're done
+        HistogramEntry entry;
+        const bool thread_still_ok = client_->ThreadFunc(&entry, idx_);
+        // lock, update histogram if needed and see if we're done
         std::lock_guard<std::mutex> g(mu_);
+        if (entry.used()) {
+          histogram_.Add(entry.value());
+        }
         if (!thread_still_ok) {
           gpr_log(GPR_ERROR, "Finishing client thread due to RPC error");
-          done_ = true;
         }
-        if (done_) {
+        if (!thread_still_ok ||
+            static_cast<bool>(gpr_atm_acq_load(&client_->thread_pool_done_))) {
+          client_->CompleteThread();
           return;
-        }
-        // check if we're resetting stats, swap out the histogram if so
-        if (new_stats_) {
-          new_stats_->Swap(&histogram_);
-          new_stats_ = nullptr;
-          cv_.notify_one();
         }
       }
     }
 
     std::mutex mu_;
-    std::condition_variable cv_;
-    bool done_;
-    Histogram* new_stats_;
     Histogram histogram_;
     Client* client_;
     const size_t idx_;
@@ -294,10 +310,32 @@ class Client {
   };
 
   std::vector<std::unique_ptr<Thread>> threads_;
-  std::unique_ptr<Timer> timer_;
+  std::unique_ptr<UsageTimer> timer_;
 
   InterarrivalTimer interarrival_timer_;
   std::vector<gpr_timespec> next_time_;
+
+  std::mutex thread_completion_mu_;
+  size_t threads_remaining_;
+  std::condition_variable threads_complete_;
+
+  gpr_event start_requests_;
+  bool started_requests_;
+
+  void MaybeStartRequests() {
+    if (!started_requests_) {
+      started_requests_ = true;
+      gpr_event_set(&start_requests_, (void*)1);
+    }
+  }
+
+  void CompleteThread() {
+    std::lock_guard<std::mutex> g(thread_completion_mu_);
+    threads_remaining_--;
+    if (threads_remaining_ == 0) {
+      threads_complete_.notify_all();
+    }
+  }
 };
 
 template <class StubType, class RequestType>
@@ -311,7 +349,7 @@ class ClientImpl : public Client {
         create_stub_(create_stub) {
     for (int i = 0; i < config.client_channels(); i++) {
       channels_[i].init(config.server_targets(i % config.server_targets_size()),
-                        config, create_stub_);
+                        config, create_stub_, i);
     }
 
     ClientRequestCreator<RequestType> create_req(&request_,
@@ -334,14 +372,21 @@ class ClientImpl : public Client {
     }
     void init(const grpc::string& target, const ClientConfig& config,
               std::function<std::unique_ptr<StubType>(std::shared_ptr<Channel>)>
-                  create_stub) {
+                  create_stub,
+              int shard) {
       // We have to use a 2-phase init like this with a default
       // constructor followed by an initializer function to make
       // old compilers happy with using this in std::vector
+      ChannelArguments args;
+      args.SetInt("shard_to_ensure_no_subchannel_merges", shard);
       channel_ = CreateTestChannel(
           target, config.security_params().server_host_override(),
-          config.has_security_params(),
-          !config.security_params().use_test_ca());
+          config.has_security_params(), !config.security_params().use_test_ca(),
+          std::shared_ptr<CallCredentials>(), args);
+      gpr_log(GPR_INFO, "Connecting to %s", target.c_str());
+      GPR_ASSERT(channel_->WaitForConnected(
+          gpr_time_add(gpr_now(GPR_CLOCK_REALTIME),
+                       gpr_time_from_seconds(300, GPR_TIMESPAN))));
       stub_ = create_stub(channel_);
     }
     Channel* get_channel() { return channel_.get(); }

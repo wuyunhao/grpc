@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -75,6 +75,9 @@
    int gpr_atm_no_barrier_cas(gpr_atm *p, gpr_atm o, gpr_atm n);
    int gpr_atm_acq_cas(gpr_atm *p, gpr_atm o, gpr_atm n);
    int gpr_atm_rel_cas(gpr_atm *p, gpr_atm o, gpr_atm n);
+
+   // Atomically, set *p=n and return the old value of *p
+   gpr_atm gpr_atm_full_xchg(gpr_atm *p, gpr_atm n);
 */
 
 #include <grpc/impl/codegen/port_platform.h>
@@ -83,8 +86,8 @@
 #include <grpc/impl/codegen/atm_gcc_atomic.h>
 #elif defined(GPR_GCC_SYNC)
 #include <grpc/impl/codegen/atm_gcc_sync.h>
-#elif defined(GPR_WIN32_ATOMIC)
-#include <grpc/impl/codegen/atm_win32.h>
+#elif defined(GPR_WINDOWS_ATOMIC)
+#include <grpc/impl/codegen/atm_windows.h>
 #else
 #error could not determine platform for atm
 #endif

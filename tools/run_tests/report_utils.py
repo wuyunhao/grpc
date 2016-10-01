@@ -1,4 +1,4 @@
-# Copyright 2015-2016, Google Inc.
+# Copyright 2015, Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,6 +29,8 @@
 
 """Generate XML and HTML test reports."""
 
+from __future__ import print_function
+
 try:
   from mako.runtime import Context
   from mako.template import Template
@@ -47,7 +49,7 @@ def _filter_msg(msg, output_format):
     # that make XML report unparseable.
     filtered_msg = filter(
         lambda x: x in string.printable and x != '\f' and x != '\v',
-        msg.decode(errors='ignore'))
+        msg.decode('UTF-8', 'ignore'))
     if output_format == 'HTML':
       filtered_msg = filtered_msg.replace('"', '&quot;')
     return filtered_msg
@@ -60,7 +62,7 @@ def render_junit_xml_report(resultset, xml_report):
   root = ET.Element('testsuites')
   testsuite = ET.SubElement(root, 'testsuite', id='1', package='grpc', 
                             name='tests')
-  for shortname, results in resultset.iteritems(): 
+  for shortname, results in resultset.items():
     for result in results:
       xml_test = ET.SubElement(testsuite, 'testcase', name=shortname) 
       if result.elapsed_time:
@@ -83,10 +85,10 @@ def render_interop_html_report(
   try:
     mytemplate = Template(filename=template_file, format_exceptions=True)
   except NameError:
-    print 'Mako template is not installed. Skipping HTML report generation.'
+    print('Mako template is not installed. Skipping HTML report generation.')
     return
   except IOError as e:
-    print 'Failed to find the template %s: %s' % (template_file, e)
+    print('Failed to find the template %s: %s' % (template_file, e))
     return
 
   sorted_test_cases = sorted(test_cases)

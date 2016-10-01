@@ -1,7 +1,7 @@
 
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,49 +35,157 @@
 /* This file is auto-generated */
 
 #include "test/core/end2end/end2end_tests.h"
+
+#include <stdbool.h>
 #include <string.h>
+
 #include <grpc/support/log.h>
 
+static bool g_pre_init_called = false;
+
 extern void bad_hostname(grpc_end2end_test_config config);
+extern void bad_hostname_pre_init(void);
 extern void binary_metadata(grpc_end2end_test_config config);
+extern void binary_metadata_pre_init(void);
 extern void call_creds(grpc_end2end_test_config config);
+extern void call_creds_pre_init(void);
 extern void cancel_after_accept(grpc_end2end_test_config config);
+extern void cancel_after_accept_pre_init(void);
 extern void cancel_after_client_done(grpc_end2end_test_config config);
+extern void cancel_after_client_done_pre_init(void);
 extern void cancel_after_invoke(grpc_end2end_test_config config);
+extern void cancel_after_invoke_pre_init(void);
 extern void cancel_before_invoke(grpc_end2end_test_config config);
+extern void cancel_before_invoke_pre_init(void);
 extern void cancel_in_a_vacuum(grpc_end2end_test_config config);
+extern void cancel_in_a_vacuum_pre_init(void);
 extern void cancel_with_status(grpc_end2end_test_config config);
-extern void channel_connectivity(grpc_end2end_test_config config);
-extern void channel_ping(grpc_end2end_test_config config);
+extern void cancel_with_status_pre_init(void);
 extern void compressed_payload(grpc_end2end_test_config config);
+extern void compressed_payload_pre_init(void);
+extern void connectivity(grpc_end2end_test_config config);
+extern void connectivity_pre_init(void);
 extern void default_host(grpc_end2end_test_config config);
+extern void default_host_pre_init(void);
 extern void disappearing_server(grpc_end2end_test_config config);
+extern void disappearing_server_pre_init(void);
 extern void empty_batch(grpc_end2end_test_config config);
+extern void empty_batch_pre_init(void);
+extern void filter_call_init_fails(grpc_end2end_test_config config);
+extern void filter_call_init_fails_pre_init(void);
+extern void filter_causes_close(grpc_end2end_test_config config);
+extern void filter_causes_close_pre_init(void);
 extern void graceful_server_shutdown(grpc_end2end_test_config config);
+extern void graceful_server_shutdown_pre_init(void);
 extern void high_initial_seqno(grpc_end2end_test_config config);
+extern void high_initial_seqno_pre_init(void);
 extern void hpack_size(grpc_end2end_test_config config);
+extern void hpack_size_pre_init(void);
+extern void idempotent_request(grpc_end2end_test_config config);
+extern void idempotent_request_pre_init(void);
 extern void invoke_large_request(grpc_end2end_test_config config);
+extern void invoke_large_request_pre_init(void);
 extern void large_metadata(grpc_end2end_test_config config);
+extern void large_metadata_pre_init(void);
+extern void load_reporting_hook(grpc_end2end_test_config config);
+extern void load_reporting_hook_pre_init(void);
 extern void max_concurrent_streams(grpc_end2end_test_config config);
+extern void max_concurrent_streams_pre_init(void);
 extern void max_message_length(grpc_end2end_test_config config);
-extern void metadata(grpc_end2end_test_config config);
+extern void max_message_length_pre_init(void);
 extern void negative_deadline(grpc_end2end_test_config config);
+extern void negative_deadline_pre_init(void);
+extern void network_status_change(grpc_end2end_test_config config);
+extern void network_status_change_pre_init(void);
+extern void no_logging(grpc_end2end_test_config config);
+extern void no_logging_pre_init(void);
 extern void no_op(grpc_end2end_test_config config);
+extern void no_op_pre_init(void);
 extern void payload(grpc_end2end_test_config config);
+extern void payload_pre_init(void);
+extern void ping(grpc_end2end_test_config config);
+extern void ping_pre_init(void);
 extern void ping_pong_streaming(grpc_end2end_test_config config);
+extern void ping_pong_streaming_pre_init(void);
 extern void registered_call(grpc_end2end_test_config config);
+extern void registered_call_pre_init(void);
 extern void request_with_flags(grpc_end2end_test_config config);
+extern void request_with_flags_pre_init(void);
 extern void request_with_payload(grpc_end2end_test_config config);
+extern void request_with_payload_pre_init(void);
 extern void server_finishes_request(grpc_end2end_test_config config);
+extern void server_finishes_request_pre_init(void);
 extern void shutdown_finishes_calls(grpc_end2end_test_config config);
+extern void shutdown_finishes_calls_pre_init(void);
 extern void shutdown_finishes_tags(grpc_end2end_test_config config);
+extern void shutdown_finishes_tags_pre_init(void);
+extern void simple_cacheable_request(grpc_end2end_test_config config);
+extern void simple_cacheable_request_pre_init(void);
 extern void simple_delayed_request(grpc_end2end_test_config config);
+extern void simple_delayed_request_pre_init(void);
+extern void simple_metadata(grpc_end2end_test_config config);
+extern void simple_metadata_pre_init(void);
 extern void simple_request(grpc_end2end_test_config config);
+extern void simple_request_pre_init(void);
+extern void streaming_error_response(grpc_end2end_test_config config);
+extern void streaming_error_response_pre_init(void);
 extern void trailing_metadata(grpc_end2end_test_config config);
+extern void trailing_metadata_pre_init(void);
+
+void grpc_end2end_tests_pre_init(void) {
+  GPR_ASSERT(!g_pre_init_called);
+  g_pre_init_called = true;
+  bad_hostname_pre_init();
+  binary_metadata_pre_init();
+  call_creds_pre_init();
+  cancel_after_accept_pre_init();
+  cancel_after_client_done_pre_init();
+  cancel_after_invoke_pre_init();
+  cancel_before_invoke_pre_init();
+  cancel_in_a_vacuum_pre_init();
+  cancel_with_status_pre_init();
+  compressed_payload_pre_init();
+  connectivity_pre_init();
+  default_host_pre_init();
+  disappearing_server_pre_init();
+  empty_batch_pre_init();
+  filter_call_init_fails_pre_init();
+  filter_causes_close_pre_init();
+  graceful_server_shutdown_pre_init();
+  high_initial_seqno_pre_init();
+  hpack_size_pre_init();
+  idempotent_request_pre_init();
+  invoke_large_request_pre_init();
+  large_metadata_pre_init();
+  load_reporting_hook_pre_init();
+  max_concurrent_streams_pre_init();
+  max_message_length_pre_init();
+  negative_deadline_pre_init();
+  network_status_change_pre_init();
+  no_logging_pre_init();
+  no_op_pre_init();
+  payload_pre_init();
+  ping_pre_init();
+  ping_pong_streaming_pre_init();
+  registered_call_pre_init();
+  request_with_flags_pre_init();
+  request_with_payload_pre_init();
+  server_finishes_request_pre_init();
+  shutdown_finishes_calls_pre_init();
+  shutdown_finishes_tags_pre_init();
+  simple_cacheable_request_pre_init();
+  simple_delayed_request_pre_init();
+  simple_metadata_pre_init();
+  simple_request_pre_init();
+  streaming_error_response_pre_init();
+  trailing_metadata_pre_init();
+}
 
 void grpc_end2end_tests(int argc, char **argv,
                         grpc_end2end_test_config config) {
   int i;
+
+  GPR_ASSERT(g_pre_init_called);
 
   if (argc <= 1) {
     bad_hostname(config);
@@ -89,23 +197,28 @@ void grpc_end2end_tests(int argc, char **argv,
     cancel_before_invoke(config);
     cancel_in_a_vacuum(config);
     cancel_with_status(config);
-    channel_connectivity(config);
-    channel_ping(config);
     compressed_payload(config);
+    connectivity(config);
     default_host(config);
     disappearing_server(config);
     empty_batch(config);
+    filter_call_init_fails(config);
+    filter_causes_close(config);
     graceful_server_shutdown(config);
     high_initial_seqno(config);
     hpack_size(config);
+    idempotent_request(config);
     invoke_large_request(config);
     large_metadata(config);
+    load_reporting_hook(config);
     max_concurrent_streams(config);
     max_message_length(config);
-    metadata(config);
     negative_deadline(config);
+    network_status_change(config);
+    no_logging(config);
     no_op(config);
     payload(config);
+    ping(config);
     ping_pong_streaming(config);
     registered_call(config);
     request_with_flags(config);
@@ -113,8 +226,11 @@ void grpc_end2end_tests(int argc, char **argv,
     server_finishes_request(config);
     shutdown_finishes_calls(config);
     shutdown_finishes_tags(config);
+    simple_cacheable_request(config);
     simple_delayed_request(config);
+    simple_metadata(config);
     simple_request(config);
+    streaming_error_response(config);
     trailing_metadata(config);
     return;
   }
@@ -156,16 +272,12 @@ void grpc_end2end_tests(int argc, char **argv,
       cancel_with_status(config);
       continue;
     }
-    if (0 == strcmp("channel_connectivity", argv[i])) {
-      channel_connectivity(config);
-      continue;
-    }
-    if (0 == strcmp("channel_ping", argv[i])) {
-      channel_ping(config);
-      continue;
-    }
     if (0 == strcmp("compressed_payload", argv[i])) {
       compressed_payload(config);
+      continue;
+    }
+    if (0 == strcmp("connectivity", argv[i])) {
+      connectivity(config);
       continue;
     }
     if (0 == strcmp("default_host", argv[i])) {
@@ -180,6 +292,14 @@ void grpc_end2end_tests(int argc, char **argv,
       empty_batch(config);
       continue;
     }
+    if (0 == strcmp("filter_call_init_fails", argv[i])) {
+      filter_call_init_fails(config);
+      continue;
+    }
+    if (0 == strcmp("filter_causes_close", argv[i])) {
+      filter_causes_close(config);
+      continue;
+    }
     if (0 == strcmp("graceful_server_shutdown", argv[i])) {
       graceful_server_shutdown(config);
       continue;
@@ -192,12 +312,20 @@ void grpc_end2end_tests(int argc, char **argv,
       hpack_size(config);
       continue;
     }
+    if (0 == strcmp("idempotent_request", argv[i])) {
+      idempotent_request(config);
+      continue;
+    }
     if (0 == strcmp("invoke_large_request", argv[i])) {
       invoke_large_request(config);
       continue;
     }
     if (0 == strcmp("large_metadata", argv[i])) {
       large_metadata(config);
+      continue;
+    }
+    if (0 == strcmp("load_reporting_hook", argv[i])) {
+      load_reporting_hook(config);
       continue;
     }
     if (0 == strcmp("max_concurrent_streams", argv[i])) {
@@ -208,12 +336,16 @@ void grpc_end2end_tests(int argc, char **argv,
       max_message_length(config);
       continue;
     }
-    if (0 == strcmp("metadata", argv[i])) {
-      metadata(config);
-      continue;
-    }
     if (0 == strcmp("negative_deadline", argv[i])) {
       negative_deadline(config);
+      continue;
+    }
+    if (0 == strcmp("network_status_change", argv[i])) {
+      network_status_change(config);
+      continue;
+    }
+    if (0 == strcmp("no_logging", argv[i])) {
+      no_logging(config);
       continue;
     }
     if (0 == strcmp("no_op", argv[i])) {
@@ -222,6 +354,10 @@ void grpc_end2end_tests(int argc, char **argv,
     }
     if (0 == strcmp("payload", argv[i])) {
       payload(config);
+      continue;
+    }
+    if (0 == strcmp("ping", argv[i])) {
+      ping(config);
       continue;
     }
     if (0 == strcmp("ping_pong_streaming", argv[i])) {
@@ -252,12 +388,24 @@ void grpc_end2end_tests(int argc, char **argv,
       shutdown_finishes_tags(config);
       continue;
     }
+    if (0 == strcmp("simple_cacheable_request", argv[i])) {
+      simple_cacheable_request(config);
+      continue;
+    }
     if (0 == strcmp("simple_delayed_request", argv[i])) {
       simple_delayed_request(config);
       continue;
     }
+    if (0 == strcmp("simple_metadata", argv[i])) {
+      simple_metadata(config);
+      continue;
+    }
     if (0 == strcmp("simple_request", argv[i])) {
       simple_request(config);
+      continue;
+    }
+    if (0 == strcmp("streaming_error_response", argv[i])) {
+      streaming_error_response(config);
       continue;
     }
     if (0 == strcmp("trailing_metadata", argv[i])) {

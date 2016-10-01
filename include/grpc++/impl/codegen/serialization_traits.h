@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,10 +43,10 @@ namespace grpc {
 /// functions:
 ///   static Status Serialize(const Message& msg,
 ///                           grpc_byte_buffer** buffer,
-//                            bool* own_buffer);
+///                           bool* own_buffer);
 ///   static Status Deserialize(grpc_byte_buffer* buffer,
 ///                             Message* msg,
-///                             int max_message_size);
+///                             int max_receive_message_size);
 ///
 /// Serialize is required to convert message to a grpc_byte_buffer, and
 /// to store a pointer to that byte buffer at *buffer. *own_buffer should
@@ -54,8 +54,8 @@ namespace grpc {
 /// ownership is retained elsewhere.
 ///
 /// Deserialize is required to convert buffer into the message stored at
-/// msg. max_message_size is passed in as a bound on the maximum number of
-/// message bytes Deserialize should accept.
+/// msg. max_receive_message_size is passed in as a bound on the maximum
+/// number of message bytes Deserialize should accept.
 ///
 /// Both functions return a Status, allowing them to explain what went
 /// wrong if required.

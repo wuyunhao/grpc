@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,7 +33,6 @@
 
 #include "test/cpp/qps/qps_worker.h"
 
-#include <cassert>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -101,6 +100,19 @@ static std::unique_ptr<Server> CreateServer(const ServerConfig& config) {
   abort();
 }
 
+class ScopedProfile GRPC_FINAL {
+ public:
+  ScopedProfile(const char* filename, bool enable) : enable_(enable) {
+    if (enable_) grpc_profiler_start(filename);
+  }
+  ~ScopedProfile() {
+    if (enable_) grpc_profiler_stop();
+  }
+
+ private:
+  const bool enable_;
+};
+
 class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
  public:
   WorkerServiceImpl(int server_port, QpsWorker* worker)
@@ -111,12 +123,12 @@ class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
       GRPC_OVERRIDE {
     InstanceGuard g(this);
     if (!g.Acquired()) {
-      return Status(StatusCode::RESOURCE_EXHAUSTED, "");
+      return Status(StatusCode::RESOURCE_EXHAUSTED, "Client worker busy");
     }
 
-    grpc_profiler_start("qps_client.prof");
+    ScopedProfile profile("qps_client.prof", false);
     Status ret = RunClientBody(ctx, stream);
-    grpc_profiler_stop();
+    gpr_log(GPR_INFO, "RunClient: Returning");
     return ret;
   }
 
@@ -125,12 +137,12 @@ class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
       GRPC_OVERRIDE {
     InstanceGuard g(this);
     if (!g.Acquired()) {
-      return Status(StatusCode::RESOURCE_EXHAUSTED, "");
+      return Status(StatusCode::RESOURCE_EXHAUSTED, "Server worker busy");
     }
 
-    grpc_profiler_start("qps_server.prof");
+    ScopedProfile profile("qps_server.prof", false);
     Status ret = RunServerBody(ctx, stream);
-    grpc_profiler_stop();
+    gpr_log(GPR_INFO, "RunServer: Returning");
     return ret;
   }
 
@@ -143,7 +155,7 @@ class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
   Status QuitWorker(ServerContext* ctx, const Void*, Void*) GRPC_OVERRIDE {
     InstanceGuard g(this);
     if (!g.Acquired()) {
-      return Status(StatusCode::RESOURCE_EXHAUSTED, "");
+      return Status(StatusCode::RESOURCE_EXHAUSTED, "Quitting worker busy");
     }
 
     worker_->MarkDone();
@@ -186,32 +198,37 @@ class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
                        ServerReaderWriter<ClientStatus, ClientArgs>* stream) {
     ClientArgs args;
     if (!stream->Read(&args)) {
-      return Status(StatusCode::INVALID_ARGUMENT, "");
+      return Status(StatusCode::INVALID_ARGUMENT, "Couldn't read args");
     }
     if (!args.has_setup()) {
-      return Status(StatusCode::INVALID_ARGUMENT, "");
+      return Status(StatusCode::INVALID_ARGUMENT, "Invalid setup arg");
     }
     gpr_log(GPR_INFO, "RunClientBody: about to create client");
     auto client = CreateClient(args.setup());
     if (!client) {
-      return Status(StatusCode::INVALID_ARGUMENT, "");
+      return Status(StatusCode::INVALID_ARGUMENT, "Couldn't create client");
     }
     gpr_log(GPR_INFO, "RunClientBody: client created");
     ClientStatus status;
     if (!stream->Write(status)) {
-      return Status(StatusCode::UNKNOWN, "");
+      return Status(StatusCode::UNKNOWN, "Client couldn't report init status");
     }
     gpr_log(GPR_INFO, "RunClientBody: creation status reported");
     while (stream->Read(&args)) {
       gpr_log(GPR_INFO, "RunClientBody: Message read");
       if (!args.has_mark()) {
         gpr_log(GPR_INFO, "RunClientBody: Message is not a mark!");
-        return Status(StatusCode::INVALID_ARGUMENT, "");
+        return Status(StatusCode::INVALID_ARGUMENT, "Invalid mark");
       }
       *status.mutable_stats() = client->Mark(args.mark().reset());
-      stream->Write(status);
+      if (!stream->Write(status)) {
+        return Status(StatusCode::UNKNOWN, "Client couldn't respond to mark");
+      }
       gpr_log(GPR_INFO, "RunClientBody: Mark response given");
     }
+
+    gpr_log(GPR_INFO, "RunClientBody: Awaiting Threads Completion");
+    client->AwaitThreadsCompletion();
 
     gpr_log(GPR_INFO, "RunClientBody: Returning");
     return Status::OK;
@@ -221,10 +238,10 @@ class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
                        ServerReaderWriter<ServerStatus, ServerArgs>* stream) {
     ServerArgs args;
     if (!stream->Read(&args)) {
-      return Status(StatusCode::INVALID_ARGUMENT, "");
+      return Status(StatusCode::INVALID_ARGUMENT, "Couldn't read server args");
     }
     if (!args.has_setup()) {
-      return Status(StatusCode::INVALID_ARGUMENT, "");
+      return Status(StatusCode::INVALID_ARGUMENT, "Bad server creation args");
     }
     if (server_port_ != 0) {
       args.mutable_setup()->set_port(server_port_);
@@ -232,24 +249,26 @@ class WorkerServiceImpl GRPC_FINAL : public WorkerService::Service {
     gpr_log(GPR_INFO, "RunServerBody: about to create server");
     auto server = CreateServer(args.setup());
     if (!server) {
-      return Status(StatusCode::INVALID_ARGUMENT, "");
+      return Status(StatusCode::INVALID_ARGUMENT, "Couldn't create server");
     }
     gpr_log(GPR_INFO, "RunServerBody: server created");
     ServerStatus status;
     status.set_port(server->port());
     status.set_cores(server->cores());
     if (!stream->Write(status)) {
-      return Status(StatusCode::UNKNOWN, "");
+      return Status(StatusCode::UNKNOWN, "Server couldn't report init status");
     }
     gpr_log(GPR_INFO, "RunServerBody: creation status reported");
     while (stream->Read(&args)) {
       gpr_log(GPR_INFO, "RunServerBody: Message read");
       if (!args.has_mark()) {
         gpr_log(GPR_INFO, "RunServerBody: Message not a mark!");
-        return Status(StatusCode::INVALID_ARGUMENT, "");
+        return Status(StatusCode::INVALID_ARGUMENT, "Invalid mark");
       }
       *status.mutable_stats() = server->Mark(args.mark().reset());
-      stream->Write(status);
+      if (!stream->Write(status)) {
+        return Status(StatusCode::UNKNOWN, "Server couldn't respond to mark");
+      }
       gpr_log(GPR_INFO, "RunServerBody: Mark response given");
     }
 

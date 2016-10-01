@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,13 +34,13 @@
 #ifndef GRPCXX_SUPPORT_BYTE_BUFFER_H
 #define GRPCXX_SUPPORT_BYTE_BUFFER_H
 
-#include <grpc/grpc.h>
-#include <grpc/byte_buffer.h>
-#include <grpc/support/log.h>
 #include <grpc++/impl/serialization_traits.h>
 #include <grpc++/support/config.h>
 #include <grpc++/support/slice.h>
 #include <grpc++/support/status.h>
+#include <grpc/byte_buffer.h>
+#include <grpc/grpc.h>
+#include <grpc/support/log.h>
 
 #include <vector>
 
@@ -64,13 +64,16 @@ class ByteBuffer GRPC_FINAL {
   ByteBuffer& operator=(const ByteBuffer&);
 
   /// Dump (read) the buffer contents into \a slices.
-  void Dump(std::vector<Slice>* slices) const;
+  Status Dump(std::vector<Slice>* slices) const;
 
   /// Remove all data.
   void Clear();
 
   /// Buffer size in bytes.
   size_t Length() const;
+
+  /// Swap the state of *this and *other.
+  void Swap(ByteBuffer* other);
 
  private:
   friend class SerializationTraits<ByteBuffer, void>;
@@ -93,14 +96,14 @@ template <>
 class SerializationTraits<ByteBuffer, void> {
  public:
   static Status Deserialize(grpc_byte_buffer* byte_buffer, ByteBuffer* dest,
-                            int max_message_size) {
+                            int max_receive_message_size) {
     dest->set_buffer(byte_buffer);
     return Status::OK;
   }
   static Status Serialize(const ByteBuffer& source, grpc_byte_buffer** buffer,
                           bool* own_buffer) {
-    *buffer = source.buffer();
-    *own_buffer = false;
+    *buffer = grpc_byte_buffer_copy(source.buffer());
+    *own_buffer = true;
     return Status::OK;
   }
 };

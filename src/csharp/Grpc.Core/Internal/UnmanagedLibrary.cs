@@ -1,6 +1,6 @@
 #region Copyright notice and license
 
-// Copyright 2015-2016, Google Inc.
+// Copyright 2015, Google Inc.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -32,8 +32,6 @@
 #endregion
 
 using System;
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -46,10 +44,9 @@ namespace Grpc.Core.Internal
 {
     /// <summary>
     /// Represents a dynamically loaded unmanaged library in a (partially) platform independent manner.
-    /// An important difference in library loading semantics is that on Windows, once we load a dynamic library using LoadLibrary,
-    /// that library becomes instantly available for <c>DllImport</c> P/Invoke calls referring to the same library name.
-    /// On Unix systems, dlopen has somewhat different semantics, so we need to use dlsym and <c>Marshal.GetDelegateForFunctionPointer</c>
-    /// to obtain delegates to native methods.
+    /// First, the native library is loaded using dlopen (on Unix systems) or using LoadLibrary (on Windows).
+    /// dlsym or GetProcAddress are then used to obtain symbol addresses. <c>Marshal.GetDelegateForFunctionPointer</c>
+    /// transforms the addresses into delegates to native methods.
     /// See http://stackoverflow.com/questions/13461989/p-invoke-to-dynamically-loaded-library-on-mono.
     /// </summary>
     internal class UnmanagedLibrary
@@ -63,14 +60,9 @@ namespace Grpc.Core.Internal
         readonly string libraryPath;
         readonly IntPtr handle;
 
-        public UnmanagedLibrary(string libraryPath)
+        public UnmanagedLibrary(string[] libraryPathAlternatives)
         {
-            this.libraryPath = Preconditions.CheckNotNull(libraryPath);
-
-            if (!File.Exists(this.libraryPath))
-            {
-                throw new FileNotFoundException("Error loading native library. File does not exist.", this.libraryPath);
-            }
+            this.libraryPath = FirstValidLibraryPath(libraryPathAlternatives);
 
             Logger.Debug("Attempting to load native library \"{0}\"", this.libraryPath);
 
@@ -89,11 +81,41 @@ namespace Grpc.Core.Internal
         /// <returns></returns>
         public IntPtr LoadSymbol(string symbolName)
         {
+            if (PlatformApis.IsWindows)
+            {
+                // See http://stackoverflow.com/questions/10473310 for background on this.
+                if (PlatformApis.Is64Bit)
+                {
+                    return Windows.GetProcAddress(this.handle, symbolName);
+                }
+                else
+                {
+                    // Yes, we could potentially predict the size... but it's a lot simpler to just try
+                    // all the candidates. Most functions have a suffix of @0, @4 or @8 so we won't be trying
+                    // many options - and if it takes a little bit longer to fail if we've really got the wrong
+                    // library, that's not a big problem. This is only called once per function in the native library.
+                    symbolName = "_" + symbolName + "@";
+                    for (int stackSize = 0; stackSize < 128; stackSize += 4)
+                    {
+                        IntPtr candidate = Windows.GetProcAddress(this.handle, symbolName + stackSize);
+                        if (candidate != IntPtr.Zero)
+                        {
+                            return candidate;
+                        }
+                    }
+                    // Fail.
+                    return IntPtr.Zero;
+                }
+            }
             if (PlatformApis.IsLinux)
             {
                 if (PlatformApis.IsMono)
                 {
                     return Mono.dlsym(this.handle, symbolName);
+                }
+                if (PlatformApis.IsNetCore)
+                {
+                    return CoreCLR.dlsym(this.handle, symbolName);
                 }
                 return Linux.dlsym(this.handle, symbolName);
             }
@@ -130,6 +152,10 @@ namespace Grpc.Core.Internal
                 {
                     return Mono.dlopen(libraryPath, RTLD_GLOBAL + RTLD_LAZY);
                 }
+                if (PlatformApis.IsNetCore)
+                {
+                    return CoreCLR.dlopen(libraryPath, RTLD_GLOBAL + RTLD_LAZY);
+                }
                 return Linux.dlopen(libraryPath, RTLD_GLOBAL + RTLD_LAZY);
             }
             if (PlatformApis.IsMacOSX)
@@ -139,10 +165,28 @@ namespace Grpc.Core.Internal
             throw new InvalidOperationException("Unsupported platform.");
         }
 
+        private static string FirstValidLibraryPath(string[] libraryPathAlternatives)
+        {
+            GrpcPreconditions.CheckArgument(libraryPathAlternatives.Length > 0, "libraryPathAlternatives cannot be empty.");
+            foreach (var path in libraryPathAlternatives)
+            {
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+            }
+            throw new FileNotFoundException(
+                String.Format("Error loading native library. Not found in any of the possible locations: {0}", 
+                    string.Join(",", libraryPathAlternatives)));
+        }
+
         private static class Windows
         {
             [DllImport("kernel32.dll")]
             internal static extern IntPtr LoadLibrary(string filename);
+
+            [DllImport("kernel32.dll")]
+            internal static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
         }
 
         private static class Linux
@@ -176,6 +220,20 @@ namespace Grpc.Core.Internal
             internal static extern IntPtr dlopen(string filename, int flags);
 
             [DllImport("__Internal")]
+            internal static extern IntPtr dlsym(IntPtr handle, string symbol);
+        }
+
+        /// <summary>
+        /// Similarly as for Mono on Linux, we load symbols for
+        /// dlopen and dlsym from the "libcoreclr.so",
+        /// to avoid the dependency on libc-dev Linux.
+        /// </summary>
+        private static class CoreCLR
+        {
+            [DllImport("libcoreclr.so")]
+            internal static extern IntPtr dlopen(string filename, int flags);
+
+            [DllImport("libcoreclr.so")]
             internal static extern IntPtr dlsym(IntPtr handle, string symbol);
         }
     }

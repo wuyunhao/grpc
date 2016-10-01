@@ -1,4 +1,4 @@
-# Copyright 2015-2016, Google Inc.
+# Copyright 2015, Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -35,36 +35,28 @@ import sys
 
 # TODO(atash): figure out why the coverage tool gets confused about the Cython
 # coverage plugin when the following files don't have a '.pxi' suffix.
-include "grpc/_cython/_cygrpc/call.pyx.pxi"
-include "grpc/_cython/_cygrpc/channel.pyx.pxi"
-include "grpc/_cython/_cygrpc/credentials.pyx.pxi"
-include "grpc/_cython/_cygrpc/completion_queue.pyx.pxi"
-include "grpc/_cython/_cygrpc/records.pyx.pxi"
-include "grpc/_cython/_cygrpc/security.pyx.pxi"
-include "grpc/_cython/_cygrpc/server.pyx.pxi"
+include "_cygrpc/grpc_string.pyx.pxi"
+include "_cygrpc/call.pyx.pxi"
+include "_cygrpc/channel.pyx.pxi"
+include "_cygrpc/credentials.pyx.pxi"
+include "_cygrpc/completion_queue.pyx.pxi"
+include "_cygrpc/records.pyx.pxi"
+include "_cygrpc/security.pyx.pxi"
+include "_cygrpc/server.pyx.pxi"
 
 #
-# Global state
+# initialize gRPC
 #
 
-cdef class _ModuleState:
 
-  cdef bint is_loaded
+cdef extern from "Python.h":
 
-  def __cinit__(self):
-    if 'win32' in sys.platform:
-      filename = pkg_resources.resource_filename(
-          'grpc._cython', '_windows/grpc_c.64.python')
-      if not pygrpc_load_core(filename):
-        raise ImportError('failed to load core gRPC library')
-    grpc_init()
-    self.is_loaded = True
-    grpc_set_ssl_roots_override_callback(
-        <grpc_ssl_roots_override_callback>ssl_roots_override_callback)
+  int Py_AtExit(void(*func)())
 
-  def __dealloc__(self):
-    if self.is_loaded:
-      grpc_shutdown()
 
-_module_state = _ModuleState()
+def _initialize():
+  grpc_set_ssl_roots_override_callback(
+          <grpc_ssl_roots_override_callback>ssl_roots_override_callback)
 
+
+_initialize()

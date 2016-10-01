@@ -1,4 +1,4 @@
-# Copyright 2015-2016, Google Inc.
+# Copyright 2015, Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -30,3 +30,5 @@
 FROM debian:wheezy
 
 RUN apt-get update -y && apt-get install -y python python-pip
+
+RUN pip install virtualenv

@@ -2,7 +2,7 @@
 
 ### Install gRPC
 Make sure you have installed gRPC on your system. Follow the instructions here:
-[https://github.com/grpc/grpc/blob/master/INSTALL](../../../INSTALL).
+[https://github.com/grpc/grpc/blob/master/INSTALL](../../../INSTALL.md).
 
 ### Get the tutorial source code
 
@@ -12,7 +12,7 @@ following command:
 
 
 ```sh
-$ git clone https://github.com/grpc/grpc.git
+$ git clone -b $(curl -L http://grpc.io/release) https://github.com/grpc/grpc
 ```
 
 Change your current directory to examples/cpp/helloworld
@@ -207,7 +207,7 @@ completion queue to return the tag. The basic flow is
     helloworld::Greeter::AsyncService service;
     ServerBuilder builder;
     builder.AddListeningPort("0.0.0.0:50051", InsecureServerCredentials());
-    builder.RegisterAsyncService(&service);
+    builder.RegisterService(&service);
     auto cq = builder.AddCompletionQueue();
     auto server = builder.BuildAndStart();
     ```

@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,8 +34,8 @@
 #ifndef GRPCXX_SUPPORT_SLICE_H
 #define GRPCXX_SUPPORT_SLICE_H
 
-#include <grpc/support/slice.h>
 #include <grpc++/support/config.h>
+#include <grpc/support/slice.h>
 
 namespace grpc {
 
@@ -76,6 +76,9 @@ class Slice GRPC_FINAL {
 
   /// Raw pointer to the end (one byte \em past the last element) of the slice.
   const uint8_t* end() const { return GPR_SLICE_END_PTR(slice_); }
+
+  /// Raw C slice. Caller needs to call gpr_slice_unref when done.
+  gpr_slice c_slice() const { return gpr_slice_ref(slice_); }
 
  private:
   friend class ByteBuffer;

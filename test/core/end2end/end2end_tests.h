@@ -42,6 +42,7 @@ typedef struct grpc_end2end_test_config grpc_end2end_test_config;
 #define FEATURE_MASK_SUPPORTS_DELAYED_CONNECTION 1
 #define FEATURE_MASK_SUPPORTS_HOSTNAME_VERIFICATION 2
 #define FEATURE_MASK_SUPPORTS_PER_CALL_CREDENTIALS 4
+#define FEATURE_MASK_SUPPORTS_REQUEST_PROXYING 8
 
 #define FAIL_AUTH_CHECK_SERVER_ARG_NAME "fail_auth_check"
 
@@ -64,6 +65,7 @@ struct grpc_end2end_test_config {
   void (*tear_down_data)(grpc_end2end_test_fixture *f);
 };
 
+void grpc_end2end_tests_pre_init(void);
 void grpc_end2end_tests(int argc, char **argv, grpc_end2end_test_config config);
 
 #endif /* GRPC_TEST_CORE_END2END_END2END_TESTS_H */

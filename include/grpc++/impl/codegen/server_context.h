@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,12 +37,12 @@
 #include <map>
 #include <memory>
 
-#include <grpc/impl/codegen/compression_types.h>
-#include <grpc/impl/codegen/time.h>
-#include <grpc++/impl/codegen/security/auth_context.h>
 #include <grpc++/impl/codegen/config.h>
+#include <grpc++/impl/codegen/create_auth_context.h>
+#include <grpc++/impl/codegen/security/auth_context.h>
 #include <grpc++/impl/codegen/string_ref.h>
 #include <grpc++/impl/codegen/time.h>
+#include <grpc/impl/codegen/compression_types.h>
 
 struct gpr_timespec;
 struct grpc_metadata;
@@ -64,8 +64,10 @@ template <class R>
 class ServerReader;
 template <class W>
 class ServerWriter;
+namespace internal {
 template <class W, class R>
-class ServerReaderWriter;
+class ServerReaderWriterBody;
+}
 template <class ServiceType, class RequestType, class ResponseType>
 class RpcMethodHandler;
 template <class ServiceType, class RequestType, class ResponseType>
@@ -93,16 +95,19 @@ class ServerContext {
   ~ServerContext();
 
 #ifndef GRPC_CXX0X_NO_CHRONO
-  std::chrono::system_clock::time_point deadline() {
+  std::chrono::system_clock::time_point deadline() const {
     return Timespec2Timepoint(deadline_);
   }
 #endif  // !GRPC_CXX0X_NO_CHRONO
 
-  gpr_timespec raw_deadline() { return deadline_; }
+  gpr_timespec raw_deadline() const { return deadline_; }
 
   void AddInitialMetadata(const grpc::string& key, const grpc::string& value);
   void AddTrailingMetadata(const grpc::string& key, const grpc::string& value);
 
+  // IsCancelled is always safe to call when using sync API
+  // When using async API, it is only safe to call IsCancelled after
+  // the AsyncNotifyWhenDone tag has been delivered
   bool IsCancelled() const;
 
   // Cancel the Call from the server. This is a best-effort API and depending on
@@ -118,21 +123,33 @@ class ServerContext {
   // was called.
   void TryCancel() const;
 
-  const std::multimap<grpc::string_ref, grpc::string_ref>& client_metadata() {
+  const std::multimap<grpc::string_ref, grpc::string_ref>& client_metadata()
+      const {
     return client_metadata_;
   }
 
   grpc_compression_level compression_level() const {
     return compression_level_;
   }
-  void set_compression_level(grpc_compression_level level);
+
+  void set_compression_level(grpc_compression_level level) {
+    compression_level_set_ = true;
+    compression_level_ = level;
+  }
+
+  bool compression_level_set() const { return compression_level_set_; }
 
   grpc_compression_algorithm compression_algorithm() const {
     return compression_algorithm_;
   }
   void set_compression_algorithm(grpc_compression_algorithm algorithm);
 
-  std::shared_ptr<const AuthContext> auth_context() const;
+  std::shared_ptr<const AuthContext> auth_context() const {
+    if (auth_context_.get() == nullptr) {
+      auth_context_ = CreateAuthContext(call_);
+    }
+    return auth_context_;
+  }
 
   // Return the peer uri in a string.
   // WARNING: this value is never authenticated or subject to any security
@@ -149,6 +166,10 @@ class ServerContext {
     has_notify_when_done_tag_ = true;
     async_notify_when_done_tag_ = tag;
   }
+
+  // Should be used for framework-level extensions only.
+  // Applications never need to call this method.
+  grpc_call* c_call() { return call_; }
 
  private:
   friend class ::grpc::testing::InteropServerContextInspector;
@@ -167,15 +188,15 @@ class ServerContext {
   template <class W>
   friend class ::grpc::ServerWriter;
   template <class W, class R>
-  friend class ::grpc::ServerReaderWriter;
+  friend class ::grpc::internal::ServerReaderWriterBody;
   template <class ServiceType, class RequestType, class ResponseType>
   friend class RpcMethodHandler;
   template <class ServiceType, class RequestType, class ResponseType>
   friend class ClientStreamingHandler;
   template <class ServiceType, class RequestType, class ResponseType>
   friend class ServerStreamingHandler;
-  template <class ServiceType, class RequestType, class ResponseType>
-  friend class BidiStreamingHandler;
+  template <class Streamer, bool WriteNeeded>
+  friend class TemplatedBidiStreamingHandler;
   friend class UnknownMethodHandler;
   friend class ::grpc::ClientContext;
 
@@ -190,7 +211,9 @@ class ServerContext {
   ServerContext(gpr_timespec deadline, grpc_metadata* metadata,
                 size_t metadata_count);
 
-  void set_call(grpc_call* call);
+  void set_call(grpc_call* call) { call_ = call; }
+
+  uint32_t initial_metadata_flags() const { return 0; }
 
   CompletionOp* completion_op_;
   bool has_notify_when_done_tag_;
@@ -205,6 +228,7 @@ class ServerContext {
   std::multimap<grpc::string, grpc::string> initial_metadata_;
   std::multimap<grpc::string, grpc::string> trailing_metadata_;
 
+  bool compression_level_set_;
   grpc_compression_level compression_level_;
   grpc_compression_algorithm compression_algorithm_;
 };

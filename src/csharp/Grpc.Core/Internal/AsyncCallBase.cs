@@ -1,6 +1,6 @@
 #region Copyright notice and license
 
-// Copyright 2015-2016, Google Inc.
+// Copyright 2015, Google Inc.
 // All rights reserved.
 // 
 // Redistribution and use in source and binary forms, with or without
@@ -58,7 +58,6 @@ namespace Grpc.Core.Internal
         readonly Func<TWrite, byte[]> serializer;
         readonly Func<byte[], TRead> deserializer;
 
-        protected readonly GrpcEnvironment environment;
         protected readonly object myLock = new object();
 
         protected INativeCall call;
@@ -67,8 +66,10 @@ namespace Grpc.Core.Internal
         protected bool started;
         protected bool cancelRequested;
 
-        protected AsyncCompletionDelegate<object> sendCompletionDelegate;  // Completion of a pending send or sendclose if not null.
-        protected AsyncCompletionDelegate<TRead> readCompletionDelegate;  // Completion of a pending send or sendclose if not null.
+        protected TaskCompletionSource<TRead> streamingReadTcs;  // Completion of a pending streaming read if not null.
+        protected TaskCompletionSource<object> streamingWriteTcs;  // Completion of a pending streaming write or send close from client if not null.
+        protected TaskCompletionSource<object> sendStatusFromServerTcs;
+        protected bool isStreamingWriteCompletionDelayed;  // Only used for the client side.
 
         protected bool readingDone;  // True if last read (i.e. read with null payload) was already received.
         protected bool halfcloseRequested;  // True if send close have been initiated.
@@ -77,11 +78,10 @@ namespace Grpc.Core.Internal
         protected bool initialMetadataSent;
         protected long streamingWritesCounter;  // Number of streaming send operations started so far.
 
-        public AsyncCallBase(Func<TWrite, byte[]> serializer, Func<byte[], TRead> deserializer, GrpcEnvironment environment)
+        public AsyncCallBase(Func<TWrite, byte[]> serializer, Func<byte[], TRead> deserializer)
         {
-            this.serializer = Preconditions.CheckNotNull(serializer);
-            this.deserializer = Preconditions.CheckNotNull(deserializer);
-            this.environment = Preconditions.CheckNotNull(environment);
+            this.serializer = GrpcPreconditions.CheckNotNull(serializer);
+            this.deserializer = GrpcPreconditions.CheckNotNull(deserializer);
         }
 
         /// <summary>
@@ -91,7 +91,7 @@ namespace Grpc.Core.Internal
         {
             lock (myLock)
             {
-                Preconditions.CheckState(started);
+                GrpcPreconditions.CheckState(started);
                 cancelRequested = true;
 
                 if (!disposed)
@@ -127,38 +127,51 @@ namespace Grpc.Core.Internal
 
         /// <summary>
         /// Initiates sending a message. Only one send operation can be active at a time.
-        /// completionDelegate is invoked upon completion.
         /// </summary>
-        protected void StartSendMessageInternal(TWrite msg, WriteFlags writeFlags, AsyncCompletionDelegate<object> completionDelegate)
+        protected Task SendMessageInternalAsync(TWrite msg, WriteFlags writeFlags)
         {
             byte[] payload = UnsafeSerialize(msg);
 
             lock (myLock)
             {
-                Preconditions.CheckNotNull(completionDelegate, "Completion delegate cannot be null");
-                CheckSendingAllowed();
+                GrpcPreconditions.CheckState(started);
+                var earlyResult = CheckSendAllowedOrEarlyResult();
+                if (earlyResult != null)
+                {
+                    return earlyResult;
+                }
 
                 call.StartSendMessage(HandleSendFinished, payload, writeFlags, !initialMetadataSent);
 
-                sendCompletionDelegate = completionDelegate;
                 initialMetadataSent = true;
                 streamingWritesCounter++;
+                streamingWriteTcs = new TaskCompletionSource<object>();
+                return streamingWriteTcs.Task;
             }
         }
 
         /// <summary>
         /// Initiates reading a message. Only one read operation can be active at a time.
-        /// completionDelegate is invoked upon completion.
         /// </summary>
-        protected void StartReadMessageInternal(AsyncCompletionDelegate<TRead> completionDelegate)
+        protected Task<TRead> ReadMessageInternalAsync()
         {
             lock (myLock)
             {
-                Preconditions.CheckNotNull(completionDelegate, "Completion delegate cannot be null");
-                CheckReadingAllowed();
+                GrpcPreconditions.CheckState(started);
+                if (readingDone)
+                {
+                    // the last read that returns null or throws an exception is idempotent
+                    // and maintains its state.
+                    GrpcPreconditions.CheckState(streamingReadTcs != null, "Call does not support streaming reads.");
+                    return streamingReadTcs.Task;
+                }
+
+                GrpcPreconditions.CheckState(streamingReadTcs == null, "Only one read can be pending at a time");
+                GrpcPreconditions.CheckState(!disposed);
 
                 call.StartReceiveMessage(HandleReadFinished);
-                readCompletionDelegate = completionDelegate;
+                streamingReadTcs = new TaskCompletionSource<TRead>();
+                return streamingReadTcs.Task;
             }
         }
 
@@ -172,7 +185,7 @@ namespace Grpc.Core.Internal
             {
                 if (!disposed && call != null)
                 {
-                    bool noMoreSendCompletions = sendCompletionDelegate == null && (halfcloseRequested || cancelRequested || finished);
+                    bool noMoreSendCompletions = streamingWriteTcs == null && (halfcloseRequested || cancelRequested || finished);
                     if (noMoreSendCompletions && readingDone && finished)
                     {
                         ReleaseResources();
@@ -188,6 +201,12 @@ namespace Grpc.Core.Internal
             get;
         }
 
+        /// <summary>
+        /// Returns an exception to throw for a failed send operation.
+        /// It is only allowed to call this method for a call that has already finished.
+        /// </summary>
+        protected abstract Exception GetRpcExceptionClientOnly();
+
         private void ReleaseResources()
         {
             if (call != null)
@@ -202,33 +221,11 @@ namespace Grpc.Core.Internal
         {
         }
 
-        protected void CheckSendingAllowed()
-        {
-            Preconditions.CheckState(started);
-            CheckNotCancelled();
-            Preconditions.CheckState(!disposed);
-
-            Preconditions.CheckState(!halfcloseRequested, "Already halfclosed.");
-            Preconditions.CheckState(!finished, "Already finished.");
-            Preconditions.CheckState(sendCompletionDelegate == null, "Only one write can be pending at a time");
-        }
-
-        protected virtual void CheckReadingAllowed()
-        {
-            Preconditions.CheckState(started);
-            Preconditions.CheckState(!disposed);
-
-            Preconditions.CheckState(!readingDone, "Stream has already been closed.");
-            Preconditions.CheckState(readCompletionDelegate == null, "Only one read can be pending at a time");
-        }
-
-        protected void CheckNotCancelled()
-        {
-            if (cancelRequested)
-            {
-                throw new OperationCanceledException("Remote call has been cancelled.");
-            }
-        }
+        /// <summary>
+        /// Checks if sending is allowed and possibly returns a Task that allows short-circuiting the send
+        /// logic by directly returning the write operation result task. Normally, null is returned.
+        /// </summary>
+        protected abstract Task CheckSendAllowedOrEarlyResult();
 
         protected byte[] UnsafeSerialize(TWrite msg)
         {
@@ -257,63 +254,72 @@ namespace Grpc.Core.Internal
             }
         }
 
-        protected void FireCompletion<T>(AsyncCompletionDelegate<T> completionDelegate, T value, Exception error)
-        {
-            try
-            {
-                completionDelegate(value, error);
-            }
-            catch (Exception e)
-            {
-                Logger.Error(e, "Exception occured while invoking completion delegate.");
-            }
-        }
-
         /// <summary>
-        /// Handles send completion.
+        /// Handles send completion (including SendCloseFromClient).
         /// </summary>
         protected void HandleSendFinished(bool success)
         {
-            AsyncCompletionDelegate<object> origCompletionDelegate = null;
+            bool delayCompletion = false;
+            TaskCompletionSource<object> origTcs = null;
             lock (myLock)
             {
-                origCompletionDelegate = sendCompletionDelegate;
-                sendCompletionDelegate = null;
+                if (!success && !finished && IsClient) {
+                    // We should be setting this only once per call, following writes will be short circuited
+                    // because they cannot start until the entire call finishes.
+                    GrpcPreconditions.CheckState(!isStreamingWriteCompletionDelayed);
+
+                    // leave streamingWriteTcs set, it will be completed once call finished.
+                    isStreamingWriteCompletionDelayed = true;
+                    delayCompletion = true;
+                }
+                else
+                {
+                    origTcs = streamingWriteTcs;
+                    streamingWriteTcs = null;    
+                }
 
                 ReleaseResourcesIfPossible();
             }
 
             if (!success)
             {
-                FireCompletion(origCompletionDelegate, null, new InvalidOperationException("Send failed"));
+                if (!delayCompletion)
+                {
+                    if (IsClient)
+                    {
+                        GrpcPreconditions.CheckState(finished);  // implied by !success && !delayCompletion && IsClient
+                        origTcs.SetException(GetRpcExceptionClientOnly());
+                    }
+                    else
+                    {
+                        origTcs.SetException (new IOException("Error sending from server."));
+                    }
+                }
+                // if delayCompletion == true, postpone SetException until call finishes.
             }
             else
             {
-                FireCompletion(origCompletionDelegate, null, null);
+                origTcs.SetResult(null);
             }
         }
 
         /// <summary>
-        /// Handles halfclose completion.
+        /// Handles send status from server completion.
         /// </summary>
-        protected void HandleHalfclosed(bool success)
+        protected void HandleSendStatusFromServerFinished(bool success)
         {
-            AsyncCompletionDelegate<object> origCompletionDelegate = null;
             lock (myLock)
             {
-                origCompletionDelegate = sendCompletionDelegate;
-                sendCompletionDelegate = null;
-
                 ReleaseResourcesIfPossible();
             }
 
             if (!success)
             {
-                FireCompletion(origCompletionDelegate, null, new InvalidOperationException("Halfclose failed"));
+                sendStatusFromServerTcs.SetException(new IOException("Error sending status from server."));
             }
             else
             {
-                FireCompletion(origCompletionDelegate, null, null);
+                sendStatusFromServerTcs.SetResult(null);
             }
         }
 
@@ -322,15 +328,17 @@ namespace Grpc.Core.Internal
         /// </summary>
         protected void HandleReadFinished(bool success, byte[] receivedMessage)
         {
+            // if success == false, received message will be null. It that case we will
+            // treat this completion as the last read an rely on C core to handle the failed
+            // read (e.g. deliver approriate statusCode on the clientside).
+
             TRead msg = default(TRead);
             var deserializeException = (success && receivedMessage != null) ? TryDeserialize(receivedMessage, out msg) : null;
 
-            AsyncCompletionDelegate<TRead> origCompletionDelegate = null;
+            TaskCompletionSource<TRead> origTcs = null;
             lock (myLock)
             {
-                origCompletionDelegate = readCompletionDelegate;
-                readCompletionDelegate = null;
-
+                origTcs = streamingReadTcs;
                 if (receivedMessage == null)
                 {
                     // This was the last read.
@@ -340,20 +348,25 @@ namespace Grpc.Core.Internal
                 if (deserializeException != null && IsClient)
                 {
                     readingDone = true;
+
+                    // TODO(jtattermusch): it might be too late to set the status
                     CancelWithStatus(DeserializeResponseFailureStatus);
+                }
+
+                if (!readingDone)
+                {
+                    streamingReadTcs = null;
                 }
 
                 ReleaseResourcesIfPossible();
             }
 
-            // TODO: handle the case when success==false
-
             if (deserializeException != null && !IsClient)
             {
-                FireCompletion(origCompletionDelegate, default(TRead), new IOException("Failed to deserialize request message.", deserializeException));
+                origTcs.SetException(new IOException("Failed to deserialize request message.", deserializeException));
                 return;
             }
-            FireCompletion(origCompletionDelegate, msg, null);
+            origTcs.SetResult(msg);
         }
     }
 }

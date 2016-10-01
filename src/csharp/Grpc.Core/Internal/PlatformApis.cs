@@ -1,6 +1,6 @@
 #region Copyright notice and license
 
-// Copyright 2015-2016, Google Inc.
+// Copyright 2015, Google Inc.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -50,15 +50,24 @@ namespace Grpc.Core.Internal
         static readonly bool isMacOSX;
         static readonly bool isWindows;
         static readonly bool isMono;
+        static readonly bool isNetCore;
 
         static PlatformApis()
         {
+#if NETSTANDARD1_5
+            isLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
+            isMacOSX = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
+            isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+            isNetCore = RuntimeInformation.FrameworkDescription.StartsWith(".NET Core");
+#else
             var platform = Environment.OSVersion.Platform;
 
             // PlatformID.MacOSX is never returned, commonly used trick is to identify Mac is by using uname.
             isMacOSX = (platform == PlatformID.Unix && GetUname() == "Darwin");
             isLinux = (platform == PlatformID.Unix && !isMacOSX);
             isWindows = (platform == PlatformID.Win32NT || platform == PlatformID.Win32S || platform == PlatformID.Win32Windows);
+            isNetCore = false;
+#endif
             isMono = Type.GetType("Mono.Runtime") != null;
         }
 
@@ -80,6 +89,14 @@ namespace Grpc.Core.Internal
         public static bool IsMono
         {
             get { return isMono; }
+        }
+
+        /// <summary>
+        /// true if running on .NET Core (CoreCLR), false otherwise.
+        /// </summary>
+        public static bool IsNetCore
+        {
+            get { return isNetCore; }
         }
 
         public static bool Is64Bit

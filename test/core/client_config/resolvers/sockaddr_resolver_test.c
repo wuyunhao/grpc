@@ -31,29 +31,29 @@
  *
  */
 
-#include "src/core/client_config/resolvers/sockaddr_resolver.h"
-
 #include <string.h>
 
+#include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
+#include <grpc/support/string_util.h>
 
-#include "src/core/client_config/resolver.h"
+#include "src/core/ext/client_config/resolver_registry.h"
+#include "src/core/ext/client_config/resolver_result.h"
+
 #include "test/core/util/test_config.h"
 
-static void subchannel_factory_ref(grpc_subchannel_factory *scv) {}
-static void subchannel_factory_unref(grpc_exec_ctx *exec_ctx,
-                                     grpc_subchannel_factory *scv) {}
-static grpc_subchannel *subchannel_factory_create_subchannel(
-    grpc_exec_ctx *exec_ctx, grpc_subchannel_factory *factory,
-    grpc_subchannel_args *args) {
-  GPR_UNREACHABLE_CODE(return NULL);
+typedef struct on_resolution_arg {
+  char *expected_server_name;
+  grpc_resolver_result *resolver_result;
+} on_resolution_arg;
+
+void on_resolution_cb(grpc_exec_ctx *exec_ctx, void *arg, grpc_error *error) {
+  on_resolution_arg *res = arg;
+  const char *server_name =
+      grpc_resolver_result_get_server_name(res->resolver_result);
+  GPR_ASSERT(strcmp(res->expected_server_name, server_name) == 0);
+  grpc_resolver_result_unref(exec_ctx, res->resolver_result);
 }
-
-static const grpc_subchannel_factory_vtable sc_vtable = {
-    subchannel_factory_ref, subchannel_factory_unref,
-    subchannel_factory_create_subchannel};
-
-static grpc_subchannel_factory sc_factory = {&sc_vtable};
 
 static void test_succeeds(grpc_resolver_factory *factory, const char *string) {
   grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
@@ -65,12 +65,20 @@ static void test_succeeds(grpc_resolver_factory *factory, const char *string) {
   GPR_ASSERT(uri);
   memset(&args, 0, sizeof(args));
   args.uri = uri;
-  args.subchannel_factory = &sc_factory;
   resolver = grpc_resolver_factory_create_resolver(factory, &args);
   GPR_ASSERT(resolver != NULL);
+
+  on_resolution_arg on_res_arg;
+  memset(&on_res_arg, 0, sizeof(on_res_arg));
+  on_res_arg.expected_server_name = uri->path;
+  grpc_closure *on_resolution =
+      grpc_closure_create(on_resolution_cb, &on_res_arg);
+
+  grpc_resolver_next(&exec_ctx, resolver, &on_res_arg.resolver_result,
+                     on_resolution);
   GRPC_RESOLVER_UNREF(&exec_ctx, resolver, "test_succeeds");
-  grpc_uri_destroy(uri);
   grpc_exec_ctx_finish(&exec_ctx);
+  grpc_uri_destroy(uri);
 }
 
 static void test_fails(grpc_resolver_factory *factory, const char *string) {
@@ -92,12 +100,14 @@ static void test_fails(grpc_resolver_factory *factory, const char *string) {
 int main(int argc, char **argv) {
   grpc_resolver_factory *ipv4, *ipv6;
   grpc_test_init(argc, argv);
+  grpc_init();
 
-  ipv4 = grpc_ipv4_resolver_factory_create();
-  ipv6 = grpc_ipv6_resolver_factory_create();
+  ipv4 = grpc_resolver_factory_lookup("ipv4");
+  ipv6 = grpc_resolver_factory_lookup("ipv6");
 
   test_fails(ipv4, "ipv4:10.2.1.1");
   test_succeeds(ipv4, "ipv4:10.2.1.1:1234");
+  test_succeeds(ipv4, "ipv4:10.2.1.1:1234,127.0.0.1:4321");
   test_fails(ipv4, "ipv4:10.2.1.1:123456");
   test_fails(ipv4, "ipv4:www.google.com");
   test_fails(ipv4, "ipv4:[");
@@ -111,6 +121,7 @@ int main(int argc, char **argv) {
 
   grpc_resolver_factory_unref(ipv4);
   grpc_resolver_factory_unref(ipv6);
+  grpc_shutdown();
 
   return 0;
 }

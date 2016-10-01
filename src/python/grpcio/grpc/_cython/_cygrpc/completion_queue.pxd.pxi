@@ -31,8 +31,6 @@
 cdef class CompletionQueue:
 
   cdef grpc_completion_queue *c_completion_queue
-  cdef object poll_condition
-  cdef bint is_polling
   cdef bint is_shutting_down
   cdef bint is_shutdown
 

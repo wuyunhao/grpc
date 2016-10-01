@@ -1,4 +1,4 @@
-# Copyright 2015-2016, Google Inc.
+# Copyright 2015, Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -36,5 +36,8 @@ RUN apt-get update && apt-get install -y \
     mono-devel \
     ca-certificates-mono \
     nuget
+
+# make sure we have nuget 2.12+ (in case there's an older cached docker image)
+RUN apt-get update && apt-get install -y nuget
 
 RUN apt-get update && apt-get install -y unzip

@@ -1,5 +1,5 @@
 #region Copyright notice and license
-// Copyright 2015-2016, Google Inc.
+// Copyright 2015, Google Inc.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -45,6 +45,7 @@ namespace Grpc.Core.Internal
         static readonly NativeMethods Native = NativeMethods.Get();
 
         AtomicCounter shutdownRefcount = new AtomicCounter(1);
+        CompletionRegistry completionRegistry;
 
         private CompletionQueueSafeHandle()
         {
@@ -53,7 +54,13 @@ namespace Grpc.Core.Internal
         public static CompletionQueueSafeHandle Create()
         {
             return Native.grpcsharp_completion_queue_create();
+        }
 
+        public static CompletionQueueSafeHandle Create(CompletionRegistry completionRegistry)
+        {
+            var cq = Native.grpcsharp_completion_queue_create();
+            cq.completionRegistry = completionRegistry;
+            return cq;
         }
 
         public CompletionQueueEvent Next()
@@ -83,6 +90,15 @@ namespace Grpc.Core.Internal
             DecrementShutdownRefcount();
         }
 
+        /// <summary>
+        /// Completion registry associated with this completion queue.
+        /// Doesn't need to be set if only using Pluck() operations.
+        /// </summary>
+        public CompletionRegistry CompletionRegistry
+        {
+            get { return completionRegistry; }
+        }
+
         protected override bool ReleaseHandle()
         {
             Native.grpcsharp_completion_queue_destroy(handle);
@@ -101,7 +117,7 @@ namespace Grpc.Core.Internal
         {
             bool success = false;
             shutdownRefcount.IncrementIfNonzero(ref success);
-            Preconditions.CheckState(success, "Shutdown has already been called");
+            GrpcPreconditions.CheckState(success, "Shutdown has already been called");
         }
 
         private void EndOp()

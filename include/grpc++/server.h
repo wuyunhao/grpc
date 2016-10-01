@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -36,6 +36,7 @@
 
 #include <list>
 #include <memory>
+#include <vector>
 
 #include <grpc++/completion_queue.h>
 #include <grpc++/impl/call.h>
@@ -57,12 +58,13 @@ class GenericServerContext;
 class AsyncGenericService;
 class ServerAsyncStreamingInterface;
 class ServerContext;
+class ServerInitializer;
 class ThreadPoolInterface;
 
 /// Models a gRPC server.
 ///
 /// Servers are configured and started via \a grpc::ServerBuilder.
-class Server GRPC_FINAL : public ServerInterface, private GrpcLibrary {
+class Server GRPC_FINAL : public ServerInterface, private GrpcLibraryCodegen {
  public:
   ~Server();
 
@@ -79,6 +81,8 @@ class Server GRPC_FINAL : public ServerInterface, private GrpcLibrary {
   class GlobalCallbacks {
    public:
     virtual ~GlobalCallbacks() {}
+    /// Called before server is created.
+    virtual void UpdateArguments(ChannelArguments* args) {}
     /// Called before application callback for each synchronous server request
     virtual void PreSynchronousRequest(ServerContext* context) = 0;
     /// Called after application callback for each synchronous server request
@@ -89,9 +93,13 @@ class Server GRPC_FINAL : public ServerInterface, private GrpcLibrary {
   /// until all server objects in the process have been destroyed.
   static void SetGlobalCallbacks(GlobalCallbacks* callbacks);
 
+  // Returns a \em raw pointer to the underlying grpc_server instance.
+  grpc_server* c_server();
+
  private:
   friend class AsyncGenericService;
   friend class ServerBuilder;
+  friend class ServerInitializer;
 
   class SyncRequest;
   class AsyncRequest;
@@ -105,10 +113,10 @@ class Server GRPC_FINAL : public ServerInterface, private GrpcLibrary {
   ///
   /// \param thread_pool The threadpool instance to use for call processing.
   /// \param thread_pool_owned Does the server own the \a thread_pool instance?
-  /// \param max_message_size Maximum message length that the channel can
-  /// receive.
+  /// \param max_receive_message_size Maximum message length that the channel
+  /// can receive.
   Server(ThreadPoolInterface* thread_pool, bool thread_pool_owned,
-         int max_message_size, const ChannelArguments& args);
+         int max_receive_message_size, ChannelArguments* args);
 
   /// Register a service. This call does not take ownership of the service.
   /// The service must exist for the lifetime of the Server instance.
@@ -153,11 +161,15 @@ class Server GRPC_FINAL : public ServerInterface, private GrpcLibrary {
 
   void ShutdownInternal(gpr_timespec deadline) GRPC_OVERRIDE;
 
-  int max_message_size() const GRPC_OVERRIDE { return max_message_size_; };
+  int max_receive_message_size() const GRPC_OVERRIDE {
+    return max_receive_message_size_;
+  };
 
   grpc_server* server() GRPC_OVERRIDE { return server_; };
 
-  const int max_message_size_;
+  ServerInitializer* initializer();
+
+  const int max_receive_message_size_;
 
   // Completion queue.
   CompletionQueue cq_;
@@ -166,22 +178,28 @@ class Server GRPC_FINAL : public ServerInterface, private GrpcLibrary {
   grpc::mutex mu_;
   bool started_;
   bool shutdown_;
+  bool shutdown_notified_;
   // The number of threads which are running callbacks.
   int num_running_cb_;
   grpc::condition_variable callback_cv_;
 
+  grpc::condition_variable shutdown_cv_;
+
   std::shared_ptr<GlobalCallbacks> global_callbacks_;
 
   std::list<SyncRequest>* sync_methods_;
+  std::vector<grpc::string> services_;
   std::unique_ptr<RpcServiceMethod> unknown_method_;
   bool has_generic_service_;
 
   // Pointer to the c grpc server.
-  grpc_server* const server_;
+  grpc_server* server_;
 
   ThreadPoolInterface* thread_pool_;
   // Whether the thread pool is created and owned by the server.
   bool thread_pool_owned_;
+
+  std::unique_ptr<ServerInitializer> server_initializer_;
 };
 
 }  // namespace grpc

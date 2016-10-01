@@ -1,4 +1,4 @@
-# Copyright 2015-2016, Google Inc.
+# Copyright 2015, Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -38,3 +38,5 @@ RUN zypper --non-interactive install which
 # Without this, pip won't be able to connect to
 # https://pypi.python.org/simple/
 RUN zypper --non-interactive install ca-certificates-mozilla
+
+RUN pip install virtualenv

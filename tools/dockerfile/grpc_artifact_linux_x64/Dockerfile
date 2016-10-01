@@ -31,12 +31,15 @@
 
 FROM debian:jessie
 
+RUN apt-get update && apt-get install debian-keyring && apt-key update
+
 # Install Git and basic packages.
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-key update && apt-get install -y \
   autoconf \
   autotools-dev \
   build-essential \
   bzip2 \
+  clang \
   curl \
   gcc \
   gcc-multilib \
@@ -73,7 +76,7 @@ RUN apt-get update && apt-get install -y \
 
 RUN pip install pip --upgrade
 RUN pip install virtualenv
-RUN pip install futures==2.2.0 enum34==1.0.4 protobuf==3.0.0a2 tox
+RUN pip install futures==2.2.0 enum34==1.0.4 protobuf==3.0.0a2
 
 
 ##################
@@ -90,6 +93,13 @@ RUN /bin/bash -l -c "echo 'gem: --no-ri --no-rdoc' > ~/.gemrc"
 RUN /bin/bash -l -c "echo 'export PATH=/usr/local/rvm/bin:$PATH' >> ~/.bashrc"
 RUN /bin/bash -l -c "echo 'rvm --default use ruby-2.1' >> ~/.bashrc"
 RUN /bin/bash -l -c "gem install bundler --no-ri --no-rdoc"
+
+
+##################
+# PHP dependencies
+
+RUN apt-get update && apt-get install -y \
+    php5 php5-dev php-pear phpunit
 
 RUN mkdir /var/local/jenkins
 

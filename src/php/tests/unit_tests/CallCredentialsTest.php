@@ -1,7 +1,7 @@
 <?php
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -148,7 +148,8 @@ class CallCredentialsTest extends PHPUnit_Framework_TestCase
             $this->call_credentials,
             $call_credentials2
         );
-        $this->assertSame('Grpc\CallCredentials', get_class($call_credentials3));
+        $this->assertSame('Grpc\CallCredentials',
+                          get_class($call_credentials3));
     }
 
     /**

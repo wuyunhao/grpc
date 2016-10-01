@@ -26,7 +26,7 @@ The server should export a service defined in the following proto:
 ```
 syntax = "proto3";
 
-package grpc.health.v1alpha;
+package grpc.health.v1;
 
 message HealthCheckRequest {
   string service = 1;
@@ -49,7 +49,7 @@ service Health {
 A client can query the server’s health status by calling the `Check` method, and
 a deadline should be set on the rpc. The client can optionally set the service
 name it wants to query for health status. The suggested format of service name
-is `package_names.ServiceName`, such as `grpc.health.v1alpha.Health`.
+is `package_names.ServiceName`, such as `grpc.health.v1.Health`.
 
 The server should register all the services manually and set
 the individual status, including an empty service name and its status. For each
@@ -58,7 +58,7 @@ a response must be sent back with an `OK` status and the status field should be
 set to `SERVING` or `NOT_SERVING` accordingly. If the service name is not
 registered, the server returns a `NOT_FOUND` GRPC status.
 
-The server should use an empty string as the key for server’s
+The server should use an empty string as the key for server's
 overall health status, so that a client not interested in a specific service can
 query the server's status with an empty request. The server can just do exact
 matching of the service name without support of any kind of wildcard matching.

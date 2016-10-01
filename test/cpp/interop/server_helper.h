@@ -36,9 +36,9 @@
 
 #include <memory>
 
-#include <grpc/compression.h>
-#include <grpc++/server_context.h>
 #include <grpc++/security/server_credentials.h>
+#include <grpc++/server_context.h>
+#include <grpc/compression.h>
 
 namespace grpc {
 namespace testing {
@@ -54,11 +54,18 @@ class InteropServerContextInspector {
   bool IsCancelled() const;
   grpc_compression_algorithm GetCallCompressionAlgorithm() const;
   uint32_t GetEncodingsAcceptedByClient() const;
+  uint32_t GetMessageFlags() const;
 
  private:
   const ::grpc::ServerContext& context_;
 };
 
+namespace interop {
+
+extern bool g_got_sigint;
+void RunServer(std::shared_ptr<ServerCredentials> creds);
+
+}  // namespace interop
 }  // namespace testing
 }  // namespace grpc
 

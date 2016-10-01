@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -45,6 +45,10 @@ static NSString * const kRemoteSSLHost = @"grpc-test.sandbox.googleapis.com";
 
 + (NSString *)host {
   return kRemoteSSLHost;
+}
+
+- (int32_t)encodingOverhead {
+  return 12; // bytes
 }
 
 @end

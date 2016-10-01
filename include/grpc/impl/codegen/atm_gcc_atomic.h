@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -68,5 +68,7 @@ static __inline int gpr_atm_rel_cas(gpr_atm *p, gpr_atm o, gpr_atm n) {
   return __atomic_compare_exchange_n(p, &o, n, 0, __ATOMIC_RELEASE,
                                      __ATOMIC_RELAXED);
 }
+
+#define gpr_atm_full_xchg(p, n) __atomic_exchange_n((p), (n), __ATOMIC_ACQ_REL)
 
 #endif /* GRPC_IMPL_CODEGEN_ATM_GCC_ATOMIC_H */

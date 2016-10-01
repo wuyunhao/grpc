@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,10 +34,11 @@
 #ifndef GRPCXX_IMPL_CODEGEN_ASYNC_STREAM_H
 #define GRPCXX_IMPL_CODEGEN_ASYNC_STREAM_H
 
-#include <grpc++/impl/codegen/channel_interface.h>
 #include <grpc++/impl/codegen/call.h>
-#include <grpc++/impl/codegen/service_type.h>
+#include <grpc++/impl/codegen/channel_interface.h>
+#include <grpc++/impl/codegen/core_codegen_interface.h>
 #include <grpc++/impl/codegen/server_context.h>
+#include <grpc++/impl/codegen/service_type.h>
 #include <grpc++/impl/codegen/status.h>
 
 namespace grpc {
@@ -51,11 +52,14 @@ class ClientAsyncStreamingInterface {
 
   /// Request notification of the reading of the initial metadata. Completion
   /// will be notified by \a tag on the associated completion queue.
+  /// This call is optional, but if it is used, it cannot be used concurrently
+  /// with or after the \a Read method.
   ///
   /// \param[in] tag Tag identifying this request.
   virtual void ReadInitialMetadata(void* tag) = 0;
 
-  /// Request notification completion.
+  /// Indicate that the stream is to be finished and request notification
+  /// Should not be used concurrently with other operations
   ///
   /// \param[out] status To be updated with the operation status.
   /// \param[in] tag Tag identifying this request.
@@ -70,6 +74,11 @@ class AsyncReaderInterface {
 
   /// Read a message of type \a R into \a msg. Completion will be notified by \a
   /// tag on the associated completion queue.
+  /// This is thread-safe with respect to \a Write or \a WritesDone methods. It
+  /// should not be called concurrently with other streaming APIs
+  /// on the same stream. It is not meaningful to call it concurrently
+  /// with another \a Read on the same stream since reads on the same stream
+  /// are delivered in order.
   ///
   /// \param[out] msg Where to eventually store the read message.
   /// \param[in] tag The tag identifying the operation.
@@ -87,6 +96,7 @@ class AsyncWriterInterface {
   /// Only one write may be outstanding at any given time. This means that
   /// after calling Write, one must wait to receive \a tag from the completion
   /// queue BEFORE calling Write again.
+  /// This is thread-safe with respect to \a Read
   ///
   /// \param[in] msg The message to be written.
   /// \param[in] tag The tag identifying the operation.
@@ -107,15 +117,16 @@ class ClientAsyncReader GRPC_FINAL : public ClientAsyncReaderInterface<R> {
                     const W& request, void* tag)
       : context_(context), call_(channel->CreateCall(method, context, cq)) {
     init_ops_.set_output_tag(tag);
-    init_ops_.SendInitialMetadata(context->send_initial_metadata_);
+    init_ops_.SendInitialMetadata(context->send_initial_metadata_,
+                                  context->initial_metadata_flags());
     // TODO(ctiller): don't assert
-    GPR_ASSERT(init_ops_.SendMessage(request).ok());
+    GPR_CODEGEN_ASSERT(init_ops_.SendMessage(request).ok());
     init_ops_.ClientSendClose();
     call_.PerformOps(&init_ops_);
   }
 
   void ReadInitialMetadata(void* tag) GRPC_OVERRIDE {
-    GPR_ASSERT(!context_->initial_metadata_received_);
+    GPR_CODEGEN_ASSERT(!context_->initial_metadata_received_);
 
     meta_ops_.set_output_tag(tag);
     meta_ops_.RecvInitialMetadata(context_);
@@ -156,6 +167,7 @@ class ClientAsyncWriterInterface : public ClientAsyncStreamingInterface,
                                    public AsyncWriterInterface<W> {
  public:
   /// Signal the client is done with the writes.
+  /// Thread-safe with respect to \a Read
   ///
   /// \param[in] tag The tag identifying the operation.
   virtual void WritesDone(void* tag) = 0;
@@ -170,14 +182,16 @@ class ClientAsyncWriter GRPC_FINAL : public ClientAsyncWriterInterface<W> {
                     R* response, void* tag)
       : context_(context), call_(channel->CreateCall(method, context, cq)) {
     finish_ops_.RecvMessage(response);
+    finish_ops_.AllowNoMessage();
 
     init_ops_.set_output_tag(tag);
-    init_ops_.SendInitialMetadata(context->send_initial_metadata_);
+    init_ops_.SendInitialMetadata(context->send_initial_metadata_,
+                                  context->initial_metadata_flags());
     call_.PerformOps(&init_ops_);
   }
 
   void ReadInitialMetadata(void* tag) GRPC_OVERRIDE {
-    GPR_ASSERT(!context_->initial_metadata_received_);
+    GPR_CODEGEN_ASSERT(!context_->initial_metadata_received_);
 
     meta_ops_.set_output_tag(tag);
     meta_ops_.RecvInitialMetadata(context_);
@@ -187,7 +201,7 @@ class ClientAsyncWriter GRPC_FINAL : public ClientAsyncWriterInterface<W> {
   void Write(const W& msg, void* tag) GRPC_OVERRIDE {
     write_ops_.set_output_tag(tag);
     // TODO(ctiller): don't assert
-    GPR_ASSERT(write_ops_.SendMessage(msg).ok());
+    GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
     call_.PerformOps(&write_ops_);
   }
 
@@ -214,7 +228,8 @@ class ClientAsyncWriter GRPC_FINAL : public ClientAsyncWriterInterface<W> {
   CallOpSet<CallOpSendMessage> write_ops_;
   CallOpSet<CallOpClientSendClose> writes_done_ops_;
   CallOpSet<CallOpRecvInitialMetadata, CallOpGenericRecvMessage,
-            CallOpClientRecvStatus> finish_ops_;
+            CallOpClientRecvStatus>
+      finish_ops_;
 };
 
 /// Client-side interface for asynchronous bi-directional streaming.
@@ -224,6 +239,7 @@ class ClientAsyncReaderWriterInterface : public ClientAsyncStreamingInterface,
                                          public AsyncReaderInterface<R> {
  public:
   /// Signal the client is done with the writes.
+  /// Thread-safe with respect to \a Read
   ///
   /// \param[in] tag The tag identifying the operation.
   virtual void WritesDone(void* tag) = 0;
@@ -238,12 +254,13 @@ class ClientAsyncReaderWriter GRPC_FINAL
                           void* tag)
       : context_(context), call_(channel->CreateCall(method, context, cq)) {
     init_ops_.set_output_tag(tag);
-    init_ops_.SendInitialMetadata(context->send_initial_metadata_);
+    init_ops_.SendInitialMetadata(context->send_initial_metadata_,
+                                  context->initial_metadata_flags());
     call_.PerformOps(&init_ops_);
   }
 
   void ReadInitialMetadata(void* tag) GRPC_OVERRIDE {
-    GPR_ASSERT(!context_->initial_metadata_received_);
+    GPR_CODEGEN_ASSERT(!context_->initial_metadata_received_);
 
     meta_ops_.set_output_tag(tag);
     meta_ops_.RecvInitialMetadata(context_);
@@ -262,7 +279,7 @@ class ClientAsyncReaderWriter GRPC_FINAL
   void Write(const W& msg, void* tag) GRPC_OVERRIDE {
     write_ops_.set_output_tag(tag);
     // TODO(ctiller): don't assert
-    GPR_ASSERT(write_ops_.SendMessage(msg).ok());
+    GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
     call_.PerformOps(&write_ops_);
   }
 
@@ -293,17 +310,29 @@ class ClientAsyncReaderWriter GRPC_FINAL
 };
 
 template <class W, class R>
-class ServerAsyncReader GRPC_FINAL : public ServerAsyncStreamingInterface,
-                                     public AsyncReaderInterface<R> {
+class ServerAsyncReaderInterface : public ServerAsyncStreamingInterface,
+                                   public AsyncReaderInterface<R> {
+ public:
+  virtual void Finish(const W& msg, const Status& status, void* tag) = 0;
+
+  virtual void FinishWithError(const Status& status, void* tag) = 0;
+};
+
+template <class W, class R>
+class ServerAsyncReader GRPC_FINAL : public ServerAsyncReaderInterface<W, R> {
  public:
   explicit ServerAsyncReader(ServerContext* ctx)
       : call_(nullptr, nullptr, nullptr), ctx_(ctx) {}
 
   void SendInitialMetadata(void* tag) GRPC_OVERRIDE {
-    GPR_ASSERT(!ctx_->sent_initial_metadata_);
+    GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
 
     meta_ops_.set_output_tag(tag);
-    meta_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+    meta_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                  ctx_->initial_metadata_flags());
+    if (ctx_->compression_level_set()) {
+      meta_ops_.set_compression_level(ctx_->compression_level());
+    }
     ctx_->sent_initial_metadata_ = true;
     call_.PerformOps(&meta_ops_);
   }
@@ -314,10 +343,14 @@ class ServerAsyncReader GRPC_FINAL : public ServerAsyncStreamingInterface,
     call_.PerformOps(&read_ops_);
   }
 
-  void Finish(const W& msg, const Status& status, void* tag) {
+  void Finish(const W& msg, const Status& status, void* tag) GRPC_OVERRIDE {
     finish_ops_.set_output_tag(tag);
     if (!ctx_->sent_initial_metadata_) {
-      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                      ctx_->initial_metadata_flags());
+      if (ctx_->compression_level_set()) {
+        finish_ops_.set_compression_level(ctx_->compression_level());
+      }
       ctx_->sent_initial_metadata_ = true;
     }
     // The response is dropped if the status is not OK.
@@ -330,11 +363,15 @@ class ServerAsyncReader GRPC_FINAL : public ServerAsyncStreamingInterface,
     call_.PerformOps(&finish_ops_);
   }
 
-  void FinishWithError(const Status& status, void* tag) {
-    GPR_ASSERT(!status.ok());
+  void FinishWithError(const Status& status, void* tag) GRPC_OVERRIDE {
+    GPR_CODEGEN_ASSERT(!status.ok());
     finish_ops_.set_output_tag(tag);
     if (!ctx_->sent_initial_metadata_) {
-      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                      ctx_->initial_metadata_flags());
+      if (ctx_->compression_level_set()) {
+        finish_ops_.set_compression_level(ctx_->compression_level());
+      }
       ctx_->sent_initial_metadata_ = true;
     }
     finish_ops_.ServerSendStatus(ctx_->trailing_metadata_, status);
@@ -349,21 +386,32 @@ class ServerAsyncReader GRPC_FINAL : public ServerAsyncStreamingInterface,
   CallOpSet<CallOpSendInitialMetadata> meta_ops_;
   CallOpSet<CallOpRecvMessage<R>> read_ops_;
   CallOpSet<CallOpSendInitialMetadata, CallOpSendMessage,
-            CallOpServerSendStatus> finish_ops_;
+            CallOpServerSendStatus>
+      finish_ops_;
 };
 
 template <class W>
-class ServerAsyncWriter GRPC_FINAL : public ServerAsyncStreamingInterface,
-                                     public AsyncWriterInterface<W> {
+class ServerAsyncWriterInterface : public ServerAsyncStreamingInterface,
+                                   public AsyncWriterInterface<W> {
+ public:
+  virtual void Finish(const Status& status, void* tag) = 0;
+};
+
+template <class W>
+class ServerAsyncWriter GRPC_FINAL : public ServerAsyncWriterInterface<W> {
  public:
   explicit ServerAsyncWriter(ServerContext* ctx)
       : call_(nullptr, nullptr, nullptr), ctx_(ctx) {}
 
   void SendInitialMetadata(void* tag) GRPC_OVERRIDE {
-    GPR_ASSERT(!ctx_->sent_initial_metadata_);
+    GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
 
     meta_ops_.set_output_tag(tag);
-    meta_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+    meta_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                  ctx_->initial_metadata_flags());
+    if (ctx_->compression_level_set()) {
+      meta_ops_.set_compression_level(ctx_->compression_level());
+    }
     ctx_->sent_initial_metadata_ = true;
     call_.PerformOps(&meta_ops_);
   }
@@ -371,18 +419,26 @@ class ServerAsyncWriter GRPC_FINAL : public ServerAsyncStreamingInterface,
   void Write(const W& msg, void* tag) GRPC_OVERRIDE {
     write_ops_.set_output_tag(tag);
     if (!ctx_->sent_initial_metadata_) {
-      write_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+      write_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                     ctx_->initial_metadata_flags());
+      if (ctx_->compression_level_set()) {
+        write_ops_.set_compression_level(ctx_->compression_level());
+      }
       ctx_->sent_initial_metadata_ = true;
     }
     // TODO(ctiller): don't assert
-    GPR_ASSERT(write_ops_.SendMessage(msg).ok());
+    GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
     call_.PerformOps(&write_ops_);
   }
 
-  void Finish(const Status& status, void* tag) {
+  void Finish(const Status& status, void* tag) GRPC_OVERRIDE {
     finish_ops_.set_output_tag(tag);
     if (!ctx_->sent_initial_metadata_) {
-      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                      ctx_->initial_metadata_flags());
+      if (ctx_->compression_level_set()) {
+        finish_ops_.set_compression_level(ctx_->compression_level());
+      }
       ctx_->sent_initial_metadata_ = true;
     }
     finish_ops_.ServerSendStatus(ctx_->trailing_metadata_, status);
@@ -401,18 +457,29 @@ class ServerAsyncWriter GRPC_FINAL : public ServerAsyncStreamingInterface,
 
 /// Server-side interface for asynchronous bi-directional streaming.
 template <class W, class R>
-class ServerAsyncReaderWriter GRPC_FINAL : public ServerAsyncStreamingInterface,
-                                           public AsyncWriterInterface<W>,
-                                           public AsyncReaderInterface<R> {
+class ServerAsyncReaderWriterInterface : public ServerAsyncStreamingInterface,
+                                         public AsyncWriterInterface<W>,
+                                         public AsyncReaderInterface<R> {
+ public:
+  virtual void Finish(const Status& status, void* tag) = 0;
+};
+
+template <class W, class R>
+class ServerAsyncReaderWriter GRPC_FINAL
+    : public ServerAsyncReaderWriterInterface<W, R> {
  public:
   explicit ServerAsyncReaderWriter(ServerContext* ctx)
       : call_(nullptr, nullptr, nullptr), ctx_(ctx) {}
 
   void SendInitialMetadata(void* tag) GRPC_OVERRIDE {
-    GPR_ASSERT(!ctx_->sent_initial_metadata_);
+    GPR_CODEGEN_ASSERT(!ctx_->sent_initial_metadata_);
 
     meta_ops_.set_output_tag(tag);
-    meta_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+    meta_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                  ctx_->initial_metadata_flags());
+    if (ctx_->compression_level_set()) {
+      meta_ops_.set_compression_level(ctx_->compression_level());
+    }
     ctx_->sent_initial_metadata_ = true;
     call_.PerformOps(&meta_ops_);
   }
@@ -426,18 +493,26 @@ class ServerAsyncReaderWriter GRPC_FINAL : public ServerAsyncStreamingInterface,
   void Write(const W& msg, void* tag) GRPC_OVERRIDE {
     write_ops_.set_output_tag(tag);
     if (!ctx_->sent_initial_metadata_) {
-      write_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+      write_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                     ctx_->initial_metadata_flags());
+      if (ctx_->compression_level_set()) {
+        write_ops_.set_compression_level(ctx_->compression_level());
+      }
       ctx_->sent_initial_metadata_ = true;
     }
     // TODO(ctiller): don't assert
-    GPR_ASSERT(write_ops_.SendMessage(msg).ok());
+    GPR_CODEGEN_ASSERT(write_ops_.SendMessage(msg).ok());
     call_.PerformOps(&write_ops_);
   }
 
-  void Finish(const Status& status, void* tag) {
+  void Finish(const Status& status, void* tag) GRPC_OVERRIDE {
     finish_ops_.set_output_tag(tag);
     if (!ctx_->sent_initial_metadata_) {
-      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_);
+      finish_ops_.SendInitialMetadata(ctx_->initial_metadata_,
+                                      ctx_->initial_metadata_flags());
+      if (ctx_->compression_level_set()) {
+        finish_ops_.set_compression_level(ctx_->compression_level());
+      }
       ctx_->sent_initial_metadata_ = true;
     }
     finish_ops_.ServerSendStatus(ctx_->trailing_metadata_, status);

@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-# Copyright 2015-2016, Google Inc.
+# Copyright 2015, Google Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,8 @@ lib_dir = File.join(File.dirname(this_dir), 'lib')
 $LOAD_PATH.unshift(lib_dir) unless $LOAD_PATH.include?(lib_dir)
 
 require 'grpc'
-require 'route_guide_services'
+require 'multi_json'
+require 'route_guide_services_pb'
 
 include Routeguide
 
@@ -115,9 +116,8 @@ def run_record_route(stub, features)
   p 'RecordRoute'
   p '-----------'
   points_on_route = 10  # arbitrary
-  deadline = points_on_route  # as delay b/w each is max 1 second
   reqs = RandomRoute.new(features, points_on_route)
-  resp = stub.record_route(reqs.each, deadline)
+  resp = stub.record_route(reqs.each)
   p "summary: #{resp.inspect}"
 end
 
@@ -140,10 +140,24 @@ ROUTE_CHAT_NOTES = [
 def run_route_chat(stub)
   p 'Route Chat'
   p '----------'
-  # TODO: decouple sending and receiving, i.e have the response enumerator run
-  # on its own thread.
-  resps = stub.route_chat(ROUTE_CHAT_NOTES)
-  resps.each { |r| p "received #{r.inspect}" }
+  sleeping_enumerator = SleepingEnumerator.new(ROUTE_CHAT_NOTES, 1)
+  stub.route_chat(sleeping_enumerator.each_item) { |r| p "received #{r.inspect}" }
+end
+
+# SleepingEnumerator yields through items, and sleeps between each one
+class SleepingEnumerator
+  def initialize(items, delay)
+    @items = items
+    @delay = delay
+  end
+  def each_item
+    return enum_for(:each_item) unless block_given?
+    @items.each do |item|
+      sleep @delay
+      p "next item to send is #{item.inspect}"
+      yield item
+    end
+  end
 end
 
 def main

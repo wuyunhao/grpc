@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -81,11 +81,17 @@ GPRAPI void gpr_avl_unref(gpr_avl avl);
     if key exists in avl, the new tree's key entry updated
     (i.e. a duplicate is not created) */
 GPRAPI gpr_avl gpr_avl_add(gpr_avl avl, void *key, void *value);
-/** return a new tree with key deleted */
+/** return a new tree with key deleted
+    implicitly unrefs avl to allow easy chaining. */
 GPRAPI gpr_avl gpr_avl_remove(gpr_avl avl, void *key);
 /** lookup key, and return the associated value.
     does not mutate avl.
     returns NULL if key is not found. */
 GPRAPI void *gpr_avl_get(gpr_avl avl, void *key);
+/** Return 1 if avl contains key, 0 otherwise; if it has the key, sets *value to
+    its value*/
+GPRAPI int gpr_avl_maybe_get(gpr_avl avl, void *key, void **value);
+/** Return 1 if avl is empty, 0 otherwise */
+GPRAPI int gpr_avl_is_empty(gpr_avl avl);
 
-#endif
+#endif /* GRPC_SUPPORT_AVL_H */

@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,31 +34,20 @@
 #import "GRPCChannel.h"
 
 #include <grpc/grpc_security.h>
+#ifdef GRPC_COMPILE_WITH_CRONET
+#include <grpc/grpc_cronet.h>
+#endif
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 #include <grpc/support/string_util.h>
 
-/**
- * Returns @c grpc_channel_credentials from the specified @c path. If the file at the path could not
- * be read then NULL is returned. If NULL is returned, @c errorPtr may not be NULL if there are
- * details available describing what went wrong.
- */
-static grpc_channel_credentials *CertificatesAtPath(NSString *path, NSError **errorPtr) {
-  // Files in PEM format can have non-ASCII characters in their comments (e.g. for the name of the
-  // issuer). Load them as UTF8 and produce an ASCII equivalent.
-  NSString *contentInUTF8 = [NSString stringWithContentsOfFile:path
-                                                      encoding:NSUTF8StringEncoding
-                                                         error:errorPtr];
-  NSData *contentInASCII = [contentInUTF8 dataUsingEncoding:NSASCIIStringEncoding
-                                       allowLossyConversion:YES];
-  if (!contentInASCII.bytes) {
-    // Passing NULL to grpc_ssl_credentials_create produces behavior we don't want, so return.
-    return NULL;
-  }
-  return grpc_ssl_credentials_create(contentInASCII.bytes, NULL, NULL);
-}
+#ifdef GRPC_COMPILE_WITH_CRONET
+#import <Cronet/Cronet.h>
+#import <GRPCClient/GRPCCall+Cronet.h>
+#endif
+#import "GRPCCompletionQueue.h"
 
-void freeChannelArgs(grpc_channel_args *channel_args) {
+static void FreeChannelArgs(grpc_channel_args *channel_args) {
   for (size_t i = 0; i < channel_args->num_args; ++i) {
     grpc_arg *arg = &channel_args->args[i];
     gpr_free(arg->key);
@@ -76,7 +65,7 @@ void freeChannelArgs(grpc_channel_args *channel_args) {
  * value responds to @c @selector(intValue). Otherwise, an exception will be raised. The caller of
  * this function is responsible for calling @c freeChannelArgs on a non-NULL returned value.
  */
-grpc_channel_args * buildChannelArgs(NSDictionary *dictionary) {
+static grpc_channel_args *BuildChannelArgs(NSDictionary *dictionary) {
   if (!dictionary) {
     return NULL;
   }
@@ -117,6 +106,26 @@ grpc_channel_args * buildChannelArgs(NSDictionary *dictionary) {
   grpc_channel_args *_channelArgs;
 }
 
+#ifdef GRPC_COMPILE_WITH_CRONET
+- (instancetype)initWithHost:(NSString *)host
+                cronetEngine:(cronet_engine *)cronetEngine
+                 channelArgs:(NSDictionary *)channelArgs {
+  if (!host) {
+    [NSException raise:NSInvalidArgumentException format:@"host argument missing"];
+  }
+
+  if (self = [super init]) {
+    _channelArgs = BuildChannelArgs(channelArgs);
+    _host = [host copy];
+    _unmanagedChannel = grpc_cronet_secure_channel_create(cronetEngine,
+                                                          _host.UTF8String,
+                                                          _channelArgs,
+                                                          NULL);
+  }
+
+  return self;
+}
+#endif
 
 - (instancetype)initWithHost:(NSString *)host
                       secure:(BOOL)secure
@@ -131,7 +140,7 @@ grpc_channel_args * buildChannelArgs(NSDictionary *dictionary) {
   }
 
   if (self = [super init]) {
-    _channelArgs = buildChannelArgs(channelArgs);
+    _channelArgs = BuildChannelArgs(channelArgs);
     _host = [host copy];
     if (secure) {
       _unmanagedChannel = grpc_secure_channel_create(credentials, _host.UTF8String, _channelArgs,
@@ -148,44 +157,25 @@ grpc_channel_args * buildChannelArgs(NSDictionary *dictionary) {
   // TODO(jcanizales): Be sure to add a test with a server that closes the connection prematurely,
   // as in the past that made this call to crash.
   grpc_channel_destroy(_unmanagedChannel);
-  freeChannelArgs(_channelArgs);
+  FreeChannelArgs(_channelArgs);
 }
+
+#ifdef GRPC_COMPILE_WITH_CRONET
++ (GRPCChannel *)secureCronetChannelWithHost:(NSString *)host
+                                 channelArgs:(NSDictionary *)channelArgs {
+  cronet_engine *engine = [GRPCCall cronetEngine];
+  if (!engine) {
+    [NSException raise:NSInvalidArgumentException
+                format:@"cronet_engine is NULL. Set it first."];
+    return nil;
+  }
+  return [[GRPCChannel alloc] initWithHost:host cronetEngine:engine channelArgs:channelArgs];
+}
+#endif
 
 + (GRPCChannel *)secureChannelWithHost:(NSString *)host {
   return [[GRPCChannel alloc] initWithHost:host secure:YES credentials:NULL channelArgs:NULL];
 }
-
-+ (GRPCChannel *)secureChannelWithHost:(NSString *)host
-                    pathToCertificates:(NSString *)path
-                           channelArgs:(NSDictionary *)channelArgs {
-  // Load default SSL certificates once.
-  static grpc_channel_credentials *kDefaultCertificates;
-  static dispatch_once_t loading;
-  dispatch_once(&loading, ^{
-    NSString *defaultPath = @"gRPCCertificates.bundle/roots"; // .pem
-    // Do not use NSBundle.mainBundle, as it's nil for tests of library projects.
-    NSBundle *bundle = [NSBundle bundleForClass:self.class];
-    NSString *path = [bundle pathForResource:defaultPath ofType:@"pem"];
-    NSError *error;
-    kDefaultCertificates = CertificatesAtPath(path, &error);
-    NSAssert(kDefaultCertificates, @"Could not read %@/%@.pem. This file, with the root "
-             "certificates, is needed to establish secure (TLS) connections. Because the file is "
-             "distributed with the gRPC library, this error is usually a sign that the library "
-             "wasn't configured correctly for your project. Error: %@",
-             bundle.bundlePath, defaultPath, error);
-  });
-
-  //TODO(jcanizales): Add NSError** parameter to the initializer.
-  grpc_channel_credentials *certificates = path
-      ? CertificatesAtPath(path, NULL)
-      : kDefaultCertificates;
-
-  return [[GRPCChannel alloc] initWithHost:host
-                                    secure:YES
-                               credentials:certificates
-                               channelArgs:channelArgs];
-}
-
 
 + (GRPCChannel *)secureChannelWithHost:(NSString *)host
                            credentials:(struct grpc_channel_credentials *)credentials
@@ -203,6 +193,16 @@ grpc_channel_args * buildChannelArgs(NSDictionary *dictionary) {
                                     secure:NO
                                credentials:NULL
                                channelArgs:channelArgs];
+}
+
+- (grpc_call *)unmanagedCallWithPath:(NSString *)path
+                     completionQueue:(GRPCCompletionQueue *)queue {
+  return grpc_channel_create_call(_unmanagedChannel,
+                                  NULL, GRPC_PROPAGATE_DEFAULTS,
+                                  queue.unmanagedQueue,
+                                  path.UTF8String,
+                                  NULL, // Passing NULL for host
+                                  gpr_inf_future(GPR_CLOCK_REALTIME), NULL);
 }
 
 @end

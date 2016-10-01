@@ -56,14 +56,14 @@ describe GRPC::RpcDesc do
     it 'sends the specified status if BadStatus is raised' do
       expect(@call).to receive(:remote_read).once.and_return(Object.new)
       expect(@call).to receive(:send_status).once.with(@bs_code, 'NOK', false,
-                                                       {})
+                                                       metadata: {})
       this_desc.run_server_method(@call, method(:bad_status))
     end
 
     it 'sends status UNKNOWN if other StandardErrors are raised' do
       expect(@call).to receive(:remote_read).once.and_return(Object.new)
       expect(@call).to receive(:send_status) .once.with(UNKNOWN, @no_reason,
-                                                        false, {})
+                                                        false, metadata: {})
       this_desc.run_server_method(@call, method(:other_error))
     end
 
@@ -93,7 +93,7 @@ describe GRPC::RpcDesc do
         expect(@call).to receive(:remote_send).once.with(@ok_response)
         expect(@call).to receive(:output_metadata).and_return(fake_md)
         expect(@call).to receive(:send_status).once.with(OK, 'OK', true,
-                                                         **fake_md)
+                                                         metadata: fake_md)
         this_desc.run_server_method(@call, method(:fake_reqresp))
       end
     end
@@ -106,13 +106,13 @@ describe GRPC::RpcDesc do
 
       it 'sends the specified status if BadStatus is raised' do
         expect(@call).to receive(:send_status).once.with(@bs_code, 'NOK', false,
-                                                         {})
+                                                         metadata: {})
         @client_streamer.run_server_method(@call, method(:bad_status_alt))
       end
 
       it 'sends status UNKNOWN if other StandardErrors are raised' do
-        expect(@call).to receive(:send_status) .once.with(UNKNOWN, @no_reason,
-                                                          false, {})
+        expect(@call).to receive(:send_status).once.with(UNKNOWN, @no_reason,
+                                                         false, metadata: {})
         @client_streamer.run_server_method(@call, method(:other_error_alt))
       end
 
@@ -128,7 +128,7 @@ describe GRPC::RpcDesc do
         expect(@call).to receive(:remote_send).once.with(@ok_response)
         expect(@call).to receive(:output_metadata).and_return(fake_md)
         expect(@call).to receive(:send_status).once.with(OK, 'OK', true,
-                                                         **fake_md)
+                                                         metadata: fake_md)
         @client_streamer.run_server_method(@call, method(:fake_clstream))
       end
     end
@@ -148,7 +148,7 @@ describe GRPC::RpcDesc do
         expect(@call).to receive(:remote_send).twice.with(@ok_response)
         expect(@call).to receive(:output_metadata).and_return(fake_md)
         expect(@call).to receive(:send_status).once.with(OK, 'OK', true,
-                                                         **fake_md)
+                                                         metadata: fake_md)
         @server_streamer.run_server_method(@call, method(:fake_svstream))
       end
     end
@@ -165,14 +165,14 @@ describe GRPC::RpcDesc do
         e = GRPC::BadStatus.new(@bs_code, 'NOK')
         expect(@call).to receive(:run_server_bidi).and_raise(e)
         expect(@call).to receive(:send_status).once.with(@bs_code, 'NOK', false,
-                                                         {})
+                                                         metadata: {})
         @bidi_streamer.run_server_method(@call, method(:bad_status_alt))
       end
 
       it 'sends status UNKNOWN if other StandardErrors are raised' do
         expect(@call).to receive(:run_server_bidi).and_raise(StandardError)
         expect(@call).to receive(:send_status).once.with(UNKNOWN, @no_reason,
-                                                         false, {})
+                                                         false, metadata: {})
         @bidi_streamer.run_server_method(@call, method(:other_error_alt))
       end
 
@@ -180,7 +180,7 @@ describe GRPC::RpcDesc do
         expect(@call).to receive(:run_server_bidi)
         expect(@call).to receive(:output_metadata).and_return(fake_md)
         expect(@call).to receive(:send_status).once.with(OK, 'OK', true,
-                                                         **fake_md)
+                                                         metadata: fake_md)
         @bidi_streamer.run_server_method(@call, method(:fake_bidistream))
       end
     end
@@ -194,6 +194,9 @@ describe GRPC::RpcDesc do
     end
 
     def fake_svstream(_arg1, _arg2)
+    end
+
+    def fake_three_args(_arg1, _arg2, _arg3)
     end
 
     it 'raises when a request_response does not have 2 args' do
@@ -244,8 +247,8 @@ describe GRPC::RpcDesc do
       expect(&blk).to_not raise_error
     end
 
-    it 'raises when a bidi streamer does not have 1 arg' do
-      [:fake_svstream, :no_arg].each do |mth|
+    it 'raises when a bidi streamer does not have 1 or 2 args' do
+      [:fake_three_args, :no_arg].each do |mth|
         blk = proc do
           @bidi_streamer.assert_arity_matches(method(mth))
         end
@@ -256,6 +259,13 @@ describe GRPC::RpcDesc do
     it 'passes when a bidi streamer has 1 arg' do
       blk = proc do
         @bidi_streamer.assert_arity_matches(method(:fake_clstream))
+      end
+      expect(&blk).to_not raise_error
+    end
+
+    it 'passes when a bidi streamer has 2 args' do
+      blk = proc do
+        @bidi_streamer.assert_arity_matches(method(:fake_svstream))
       end
       expect(&blk).to_not raise_error
     end

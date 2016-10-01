@@ -35,8 +35,8 @@
  * they can (ultimately) be used in many different RPC systems (with differing
  * implementations). */
 
-#ifndef CENSUS_CENSUS_H
-#define CENSUS_CENSUS_H
+#ifndef GRPC_CENSUS_H
+#define GRPC_CENSUS_H
 
 #include <grpc/grpc.h>
 
@@ -56,9 +56,11 @@ enum census_features {
 
 /** Shutdown and startup census subsystem. The 'features' argument should be
  * the OR (|) of census_features values. If census fails to initialize, then
- * census_initialize() will return a non-zero value. It is an error to call
- * census_initialize() more than once (without an intervening
- * census_shutdown()). */
+ * census_initialize() will return -1, otherwise the set of enabled features
+ * (which may be smaller than that provided in the `features` argument, see
+ * census_supported()) is returned. It is an error to call census_initialize()
+ * more than once (without an intervening census_shutdown()). These functions
+ * are not thread-safe. */
 CENSUSAPI int census_initialize(int features);
 CENSUSAPI void census_shutdown(void);
 
@@ -80,18 +82,18 @@ CENSUSAPI int census_enabled(void);
   metrics will be recorded. Keys are unique within a context. */
 typedef struct census_context census_context;
 
-/* A tag is a key:value pair. The key is a non-empty, printable (UTF-8
-   encoded), nil-terminated string. The value is a binary string, that may be
-   printable. There are limits on the sizes of both keys and values (see
-   CENSUS_MAX_TAG_KB_LEN definition below), and the number of tags that can be
-   propagated (CENSUS_MAX_PROPAGATED_TAGS). Users should also remember that
-   some systems may have limits on, e.g., the number of bytes that can be
-   transmitted as metadata, and that larger tags means more memory consumed
-   and time in processing. */
+/* A tag is a key:value pair. Both keys and values are nil-terminated strings,
+   containing printable ASCII characters (decimal 32-126). Keys must be at
+   least one character in length. Both keys and values can have at most
+   CENSUS_MAX_TAG_KB_LEN characters (including the terminating nil). The
+   maximum number of tags that can be propagated is
+   CENSUS_MAX_PROPAGATED_TAGS. Users should also remember that some systems
+   may have limits on, e.g., the number of bytes that can be transmitted as
+   metadata, and that larger tags means more memory consumed and time in
+   processing. */
 typedef struct {
   const char *key;
   const char *value;
-  size_t value_len;
   uint8_t flags;
 } census_tag;
 
@@ -103,28 +105,25 @@ typedef struct {
 /* Tag flags. */
 #define CENSUS_TAG_PROPAGATE 1 /* Tag should be propagated over RPC */
 #define CENSUS_TAG_STATS 2     /* Tag will be used for statistics aggregation */
-#define CENSUS_TAG_BINARY 4    /* Tag value is not printable */
-#define CENSUS_TAG_RESERVED 8  /* Reserved for internal use. */
-/* Flag values 8,16,32,64,128 are reserved for future/internal use. Clients
+#define CENSUS_TAG_RESERVED 4  /* Reserved for internal use. */
+/* Flag values 4,8,16,32,64,128 are reserved for future/internal use. Clients
    should not use or rely on their values. */
 
 #define CENSUS_TAG_IS_PROPAGATED(flags) (flags & CENSUS_TAG_PROPAGATE)
 #define CENSUS_TAG_IS_STATS(flags) (flags & CENSUS_TAG_STATS)
-#define CENSUS_TAG_IS_BINARY(flags) (flags & CENSUS_TAG_BINARY)
 
 /* An instance of this structure is kept by every context, and records the
    basic information associated with the creation of that context. */
 typedef struct {
-  int n_propagated_tags;        /* number of propagated printable tags */
-  int n_propagated_binary_tags; /* number of propagated binary tags */
-  int n_local_tags;             /* number of non-propagated (local) tags */
-  int n_deleted_tags;           /* number of tags that were deleted */
-  int n_added_tags;             /* number of tags that were added */
-  int n_modified_tags;          /* number of tags that were modified */
-  int n_invalid_tags;           /* number of tags with bad keys or values (e.g.
-                                   longer than CENSUS_MAX_TAG_KV_LEN) */
-  int n_ignored_tags;           /* number of tags ignored because of
-                                   CENSUS_MAX_PROPAGATED_TAGS limit. */
+  int n_propagated_tags; /* number of propagated tags */
+  int n_local_tags;      /* number of non-propagated (local) tags */
+  int n_deleted_tags;    /* number of tags that were deleted */
+  int n_added_tags;      /* number of tags that were added */
+  int n_modified_tags;   /* number of tags that were modified */
+  int n_invalid_tags;    /* number of tags with bad keys or values (e.g.
+                            longer than CENSUS_MAX_TAG_KV_LEN) */
+  int n_ignored_tags;    /* number of tags ignored because of
+                            CENSUS_MAX_PROPAGATED_TAGS limit. */
 } census_context_status;
 
 /* Create a new context, adding and removing tags from an existing context.
@@ -132,10 +131,10 @@ typedef struct {
    to add as many tags in a single operation as is practical for the client.
    @param base Base context to build upon. Can be NULL.
    @param tags A set of tags to be added/changed/deleted. Tags with keys that
-   are in 'tags', but not 'base', are added to the tag set. Keys that are in
+   are in 'tags', but not 'base', are added to the context. Keys that are in
    both 'tags' and 'base' will have their value/flags modified. Tags with keys
-   in both, but with NULL or zero-length values, will be deleted from the tag
-   set. Tags with invalid (too long or short) keys or values will be ignored.
+   in both, but with NULL values, will be deleted from the context. Tags with
+   invalid (too long or short) keys or values will be ignored.
    If adding a tag will result in more than CENSUS_MAX_PROPAGATED_TAGS in either
    binary or non-binary tags, they will be ignored, as will deletions of
    tags that don't exist.
@@ -185,32 +184,19 @@ CENSUSAPI int census_context_get_tag(const census_context *context,
    for use by RPC systems only, for purposes of transmitting/receiving contexts.
    */
 
-/* Encode a context into a buffer. The propagated tags are encoded into the
-   buffer in two regions: one for printable tags, and one for binary tags.
+/* Encode a context into a buffer.
    @param context context to be encoded
-   @param buffer pointer to buffer. This address will be used to encode the
-                 printable tags.
+   @param buffer buffer into which the context will be encoded.
    @param buf_size number of available bytes in buffer.
-   @param print_buf_size Will be set to the number of bytes consumed by
-                         printable tags.
-   @param bin_buf_size Will be set to the number of bytes used to encode the
-                       binary tags.
-   @return A pointer to the binary tag's encoded, or NULL if the buffer was
-           insufficiently large to hold the encoded tags. Thus, if successful,
-           printable tags are encoded into
-           [buffer, buffer + *print_buf_size) and binary tags into
-           [returned-ptr, returned-ptr + *bin_buf_size) (and the returned
-           pointer should be buffer + *print_buf_size) */
-CENSUSAPI char *census_context_encode(const census_context *context,
-                                      char *buffer, size_t buf_size,
-                                      size_t *print_buf_size,
-                                      size_t *bin_buf_size);
+   @return The number of buffer bytes consumed for the encoded context, or
+           zero if the buffer was of insufficient size. */
+CENSUSAPI size_t census_context_encode(const census_context *context,
+                                       char *buffer, size_t buf_size);
 
-/* Decode context buffers encoded with census_context_encode(). Returns NULL
+/* Decode context buffer encoded with census_context_encode(). Returns NULL
    if there is an error in parsing either buffer. */
-CENSUSAPI census_context *census_context_decode(const char *buffer, size_t size,
-                                                const char *bin_buffer,
-                                                size_t bin_size);
+CENSUSAPI census_context *census_context_decode(const char *buffer,
+                                                size_t size);
 
 /* Distributed traces can have a number of options. */
 enum census_trace_mask_values {
@@ -446,30 +432,44 @@ CENSUSAPI int census_get_trace_record(census_trace_record *trace_record);
 CENSUSAPI void census_trace_scan_end();
 
 /* Core stats collection API's. The following concepts are used:
-   * Aggregation: A collection of values. Census supports the following
-       aggregation types:
-         Sum - a single summation type. Typically used for keeping (e.g.)
-           counts of events.
-         Distribution - statistical distribution information, used for
-           recording average, standard deviation etc.
-         Histogram - a histogram of measurements falling in defined bucket
-           boundaries.
-         Window - a count of events that happen in reolling time window.
-     New aggregation types can be added by the user, if desired (see
-     census_register_aggregation()).
-   * Metric: Each measurement is for a single metric. Examples include RPC
-     latency, CPU seconds consumed, and bytes transmitted.
-   * View: A view is a combination of a metric, a tag set (in which the tag
-     values are regular expressions) and a set of aggregations. When a
-     measurement for a metric matches the view tags, it is recorded (for each
-     unique set of tags) against each aggregation. Each metric can have an
-     arbitrary number of views by which it will be broken down.
+   * Resource: Users record measurements for a single resource. Examples
+     include RPC latency, CPU seconds consumed, and bytes transmitted.
+   * Aggregation: An aggregation of a set of measurements. Census supports the
+       following aggregation types:
+       * Distribution - statistical distribution information, used for
+         recording average, standard deviation etc. Can include a histogram.
+       * Interval - a count of events that happen in a rolling time window.
+   * View: A view is a combination of a Resource, a set of tag keys and an
+     Aggregation. When a measurement for a Resource matches the View tags, it is
+     recorded (for each unique set of tag values) using the Aggregation type.
+     Each resource can have an arbitrary number of views by which it will be
+     broken down.
+
+  Census uses protos to define each of the above, and output results. This
+  ensures unification across the different language and runtime
+  implementations. The proto definitions can be found in src/proto/census.
 */
 
+/* Define a new resource. `resource_pb` should contain an encoded Resource
+   protobuf, `resource_pb_size` being the size of the buffer. Returns a -ve
+   value on error, or a positive (>= 0) resource id (for use in
+   census_delete_resource() and census_record_values()). In order to be valid, a
+   resource must have a name, and at least one numerator in it's unit type. The
+   resource name must be unique, and an error will be returned if it is not. */
+CENSUSAPI int32_t census_define_resource(const uint8_t *resource_pb,
+                                         size_t resource_pb_size);
+
+/* Delete a resource created by census_define_resource(). */
+CENSUSAPI void census_delete_resource(int32_t resource_id);
+
+/* Determine the id of a resource, given it's name. returns -1 if the resource
+   does not exist. */
+CENSUSAPI int32_t census_resource_id(const char *name);
+
 /* A single value to be recorded comprises two parts: an ID for the particular
- * metric and the value to be recorded against it. */
+ * resource and the value to be recorded against it. */
 typedef struct {
-  uint32_t metric_id;
+  int32_t resource_id;
   double value;
 } census_value;
 
@@ -477,80 +477,8 @@ typedef struct {
 CENSUSAPI void census_record_values(census_context *context,
                                     census_value *values, size_t nvalues);
 
-/** Type representing a particular aggregation */
-typedef struct census_aggregation_ops census_aggregation_ops;
-
-/* Predefined aggregation types, for use with census_view_create(). */
-extern census_aggregation_ops census_agg_sum;
-extern census_aggregation_ops census_agg_distribution;
-extern census_aggregation_ops census_agg_histogram;
-extern census_aggregation_ops census_agg_window;
-
-/** Information needed to instantiate a new aggregation. Used in view
-    construction via census_define_view(). */
-typedef struct {
-  const census_aggregation_ops *ops;
-  const void *create_arg; /* Aaggregation initialization argument. */
-} census_aggregation;
-
-/** A census view type. Opaque. */
-typedef struct census_view census_view;
-
-/** Create a new view.
-  @param metric_id Metric with which this view is associated.
-  @param tags tags that define the view.
-  @param aggregations aggregations to associate with the view
-  @param naggregations number of aggregations
-
-  @return A new census view
-*/
-
-/* TODO(aveitch): consider if context is the right argument type to pass in
-   tags. */
-CENSUSAPI census_view *census_view_create(
-    uint32_t metric_id, const census_context *tags,
-    const census_aggregation *aggregations, size_t naggregations);
-
-/** Destroy a previously created view. */
-CENSUSAPI void census_view_delete(census_view *view);
-
-/** Metric ID associated with a view */
-CENSUSAPI size_t census_view_metric(const census_view *view);
-
-/** Number of aggregations associated with view. */
-CENSUSAPI size_t census_view_naggregations(const census_view *view);
-
-/** Get tags associated with view. */
-CENSUSAPI const census_context *census_view_tags(const census_view *view);
-
-/** Get aggregation descriptors associated with a view. */
-CENSUSAPI const census_aggregation *census_view_aggregrations(
-    const census_view *view);
-
-/** Holds all the aggregation data for a particular view instantiation. Forms
-  part of the data returned by census_view_data(). */
-typedef struct {
-  const census_context *tags; /* Tags for this set of aggregations. */
-  const void **data; /* One data set for every aggregation in the view. */
-} census_view_aggregation_data;
-
-/** Census view data as returned by census_view_get_data(). */
-typedef struct {
-  size_t n_tag_sets; /* Number of unique tag sets that matched view. */
-  const census_view_aggregation_data *data; /* n_tag_sets entries */
-} census_view_data;
-
-/** Get data from aggregations associated with a view.
-  @param view View from which to get data.
-  @return Full set of data for all aggregations for the view.
-*/
-CENSUSAPI const census_view_data *census_view_get_data(const census_view *view);
-
-/** Reset all view data to zero for the specified view */
-CENSUSAPI void census_view_reset(census_view *view);
-
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* CENSUS_CENSUS_H */
+#endif /* GRPC_CENSUS_H */

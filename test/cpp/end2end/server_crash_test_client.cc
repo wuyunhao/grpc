@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -40,6 +40,8 @@
 #include <grpc++/channel.h>
 #include <grpc++/client_context.h>
 #include <grpc++/create_channel.h>
+#include <grpc/support/log.h>
+
 #include "src/proto/grpc/testing/echo.grpc.pb.h"
 
 DEFINE_string(address, "", "Address to connect to");
@@ -63,6 +65,7 @@ int main(int argc, char** argv) {
   EchoRequest request;
   EchoResponse response;
   grpc::ClientContext context;
+  context.set_fail_fast(false);
 
   if (FLAGS_mode == "bidi") {
     auto stream = stub->BidiStream(&context);

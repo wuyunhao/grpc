@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,14 +32,15 @@
  */
 
 #include <ruby/ruby.h>
+
 #include "rb_grpc_imports.generated.h"
 #include "rb_channel.h"
-
-#include <ruby/ruby.h>
 
 #include <grpc/grpc.h>
 #include <grpc/grpc_security.h>
 #include <grpc/support/alloc.h>
+#include <grpc/support/log.h>
+#include <grpc/support/time.h>
 #include "rb_grpc.h"
 #include "rb_call.h"
 #include "rb_channel_args.h"
@@ -56,11 +57,6 @@ static ID id_channel;
  * GCed before the channel */
 static ID id_target;
 
-/* id_cqueue is the name of the hidden ivar that preserves a reference to the
- * completion queue used to create the call, preserved so that it does not get
- * GCed before the channel */
-static ID id_cqueue;
-
 /* id_insecure_channel is used to indicate that a channel is insecure */
 static VALUE id_insecure_channel;
 
@@ -70,13 +66,13 @@ static VALUE grpc_rb_cChannel = Qnil;
 /* Used during the conversion of a hash to channel args during channel setup */
 static VALUE grpc_rb_cChannelArgs;
 
-/* grpc_rb_channel wraps a grpc_channel.  It provides a peer ruby object,
- * 'mark' to minimize copying when a channel is created from ruby. */
+/* grpc_rb_channel wraps a grpc_channel. */
 typedef struct grpc_rb_channel {
-  /* Holder of ruby objects involved in constructing the channel */
-  VALUE mark;
+  VALUE credentials;
+
   /* The actual channel */
   grpc_channel *wrapped;
+  grpc_completion_queue *queue;
 } grpc_rb_channel;
 
 /* Destroys Channel instances. */
@@ -87,13 +83,9 @@ static void grpc_rb_channel_free(void *p) {
   };
   ch = (grpc_rb_channel *)p;
 
-  /* Deletes the wrapped object if the mark object is Qnil, which indicates
-   * that no other object is the actual owner. */
-  if (ch->wrapped != NULL && ch->mark == Qnil) {
+  if (ch->wrapped != NULL) {
     grpc_channel_destroy(ch->wrapped);
-    rb_warning("channel gc: destroyed the c channel");
-  } else {
-    rb_warning("channel gc: did not destroy the c channel");
+    grpc_rb_completion_queue_destroy(ch->queue);
   }
 
   xfree(p);
@@ -106,8 +98,8 @@ static void grpc_rb_channel_mark(void *p) {
     return;
   }
   channel = (grpc_rb_channel *)p;
-  if (channel->mark != Qnil) {
-    rb_gc_mark(channel->mark);
+  if (channel->credentials != Qnil) {
+    rb_gc_mark(channel->credentials);
   }
 }
 
@@ -125,7 +117,7 @@ static rb_data_type_t grpc_channel_data_type = {
 static VALUE grpc_rb_channel_alloc(VALUE cls) {
   grpc_rb_channel *wrapper = ALLOC(grpc_rb_channel);
   wrapper->wrapped = NULL;
-  wrapper->mark = Qnil;
+  wrapper->credentials = Qnil;
   return TypedData_Wrap_Struct(cls, &grpc_channel_data_type, wrapper);
 }
 
@@ -162,6 +154,7 @@ static VALUE grpc_rb_channel_init(int argc, VALUE *argv, VALUE self) {
     }
     ch = grpc_insecure_channel_create(target_chars, &args, NULL);
   } else {
+    wrapper->credentials = credentials;
     creds = grpc_rb_get_wrapped_channel_credentials(credentials);
     ch = grpc_secure_channel_create(creds, target_chars, &args, NULL);
   }
@@ -175,6 +168,7 @@ static VALUE grpc_rb_channel_init(int argc, VALUE *argv, VALUE self) {
   }
   rb_ivar_set(self, id_target, target);
   wrapper->wrapped = ch;
+  wrapper->queue = grpc_completion_queue_create(NULL);
   return self;
 }
 
@@ -213,16 +207,18 @@ static VALUE grpc_rb_channel_get_connectivity_state(int argc, VALUE *argv,
    the completion queue with success=0 */
 static VALUE grpc_rb_channel_watch_connectivity_state(VALUE self,
                                                       VALUE last_state,
-                                                      VALUE cqueue,
-                                                      VALUE deadline,
-                                                      VALUE tag) {
+                                                      VALUE deadline) {
   grpc_rb_channel *wrapper = NULL;
   grpc_channel *ch = NULL;
   grpc_completion_queue *cq = NULL;
 
-  cq = grpc_rb_get_wrapped_completion_queue(cqueue);
+  void *tag = wrapper;
+
+  grpc_event event;
+
   TypedData_Get_Struct(self, grpc_rb_channel, &grpc_channel_data_type, wrapper);
   ch = wrapper->wrapped;
+  cq = wrapper->queue;
   if (ch == NULL) {
     rb_raise(rb_eRuntimeError, "closed!");
     return Qnil;
@@ -232,45 +228,23 @@ static VALUE grpc_rb_channel_watch_connectivity_state(VALUE self,
       (grpc_connectivity_state)NUM2LONG(last_state),
       grpc_rb_time_timeval(deadline, /* absolute time */ 0),
       cq,
-      ROBJECT(tag));
+      tag);
 
-  return Qnil;
-}
+  event = rb_completion_queue_pluck(cq, tag,
+                                    gpr_inf_future(GPR_CLOCK_REALTIME), NULL);
 
-/* Clones Channel instances.
-
-   Gives Channel a consistent implementation of Ruby's object copy/dup
-   protocol. */
-static VALUE grpc_rb_channel_init_copy(VALUE copy, VALUE orig) {
-  grpc_rb_channel *orig_ch = NULL;
-  grpc_rb_channel *copy_ch = NULL;
-
-  if (copy == orig) {
-    return copy;
+  if (event.success) {
+    return Qtrue;
+  } else {
+    return Qfalse;
   }
-
-  /* Raise an error if orig is not a channel object or a subclass. */
-  if (TYPE(orig) != T_DATA ||
-      RDATA(orig)->dfree != (RUBY_DATA_FUNC)grpc_rb_channel_free) {
-    rb_raise(rb_eTypeError, "not a %s", rb_obj_classname(grpc_rb_cChannel));
-    return Qnil;
-  }
-
-  TypedData_Get_Struct(orig, grpc_rb_channel, &grpc_channel_data_type, orig_ch);
-  TypedData_Get_Struct(copy, grpc_rb_channel, &grpc_channel_data_type, copy_ch);
-
-  /* use ruby's MEMCPY to make a byte-for-byte copy of the channel wrapper
-   * object. */
-  MEMCPY(copy_ch, orig_ch, grpc_rb_channel, 1);
-  return copy;
 }
 
 /* Create a call given a grpc_channel, in order to call method. The request
    is not sent until grpc_call_invoke is called. */
-static VALUE grpc_rb_channel_create_call(VALUE self, VALUE cqueue,
-                                         VALUE parent, VALUE mask,
-                                         VALUE method, VALUE host,
-                                         VALUE deadline) {
+static VALUE grpc_rb_channel_create_call(VALUE self, VALUE parent,
+                                         VALUE mask, VALUE method,
+                                         VALUE host, VALUE deadline) {
   VALUE res = Qnil;
   grpc_rb_channel *wrapper = NULL;
   grpc_call *call = NULL;
@@ -290,7 +264,7 @@ static VALUE grpc_rb_channel_create_call(VALUE self, VALUE cqueue,
     parent_call = grpc_rb_get_wrapped_call(parent);
   }
 
-  cq = grpc_rb_get_wrapped_completion_queue(cqueue);
+  cq = grpc_completion_queue_create(NULL);
   TypedData_Get_Struct(self, grpc_rb_channel, &grpc_channel_data_type, wrapper);
   ch = wrapper->wrapped;
   if (ch == NULL) {
@@ -307,15 +281,11 @@ static VALUE grpc_rb_channel_create_call(VALUE self, VALUE cqueue,
              method_chars);
     return Qnil;
   }
-  res = grpc_rb_wrap_call(call);
+  res = grpc_rb_wrap_call(call, cq);
 
   /* Make this channel an instance attribute of the call so that it is not GCed
    * before the call. */
   rb_ivar_set(res, id_channel, self);
-
-  /* Make the completion queue an instance attribute of the call so that it is
-   * not GCed before the call. */
-  rb_ivar_set(res, id_cqueue, cqueue);
   return res;
 }
 
@@ -330,7 +300,6 @@ static VALUE grpc_rb_channel_destroy(VALUE self) {
   if (ch != NULL) {
     grpc_channel_destroy(ch);
     wrapper->wrapped = NULL;
-    wrapper->mark = Qnil;
   }
 
   return Qnil;
@@ -380,7 +349,7 @@ static void Init_grpc_connectivity_states() {
   rb_define_const(grpc_rb_mConnectivityStates, "TRANSIENT_FAILURE",
                   LONG2NUM(GRPC_CHANNEL_TRANSIENT_FAILURE));
   rb_define_const(grpc_rb_mConnectivityStates, "FATAL_FAILURE",
-                  LONG2NUM(GRPC_CHANNEL_FATAL_FAILURE));
+                  LONG2NUM(GRPC_CHANNEL_SHUTDOWN));
 }
 
 void Init_grpc_channel() {
@@ -394,7 +363,7 @@ void Init_grpc_channel() {
   /* Provides a ruby constructor and support for dup/clone. */
   rb_define_method(grpc_rb_cChannel, "initialize", grpc_rb_channel_init, -1);
   rb_define_method(grpc_rb_cChannel, "initialize_copy",
-                   grpc_rb_channel_init_copy, 1);
+                   grpc_rb_cannot_init_copy, 1);
 
   /* Add ruby analogues of the Channel methods. */
   rb_define_method(grpc_rb_cChannel, "connectivity_state",
@@ -403,13 +372,12 @@ void Init_grpc_channel() {
   rb_define_method(grpc_rb_cChannel, "watch_connectivity_state",
                    grpc_rb_channel_watch_connectivity_state, 4);
   rb_define_method(grpc_rb_cChannel, "create_call",
-                   grpc_rb_channel_create_call, 6);
+                   grpc_rb_channel_create_call, 5);
   rb_define_method(grpc_rb_cChannel, "target", grpc_rb_channel_get_target, 0);
   rb_define_method(grpc_rb_cChannel, "destroy", grpc_rb_channel_destroy, 0);
   rb_define_alias(grpc_rb_cChannel, "close", "destroy");
 
   id_channel = rb_intern("__channel");
-  id_cqueue = rb_intern("__cqueue");
   id_target = rb_intern("__target");
   rb_define_const(grpc_rb_cChannel, "SSL_TARGET",
                   ID2SYM(rb_intern(GRPC_SSL_TARGET_NAME_OVERRIDE_ARG)));
@@ -418,7 +386,7 @@ void Init_grpc_channel() {
   rb_define_const(grpc_rb_cChannel, "MAX_CONCURRENT_STREAMS",
                   ID2SYM(rb_intern(GRPC_ARG_MAX_CONCURRENT_STREAMS)));
   rb_define_const(grpc_rb_cChannel, "MAX_MESSAGE_LENGTH",
-                  ID2SYM(rb_intern(GRPC_ARG_MAX_MESSAGE_LENGTH)));
+                  ID2SYM(rb_intern(GRPC_ARG_MAX_RECEIVE_MESSAGE_LENGTH)));
   id_insecure_channel = rb_intern("this_channel_is_insecure");
   Init_grpc_propagate_masks();
   Init_grpc_connectivity_states();

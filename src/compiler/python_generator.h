@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,6 +43,8 @@ namespace grpc_python_generator {
 // Data pertaining to configuration of the generator with respect to anything
 // that may be used internally at Google.
 struct GeneratorConfiguration {
+  GeneratorConfiguration();
+  grpc::string grpc_package_root;
   grpc::string beta_package_root;
 };
 
@@ -55,6 +57,7 @@ class PythonGrpcGenerator : public grpc::protobuf::compiler::CodeGenerator {
                 const grpc::string& parameter,
                 grpc::protobuf::compiler::GeneratorContext* context,
                 grpc::string* error) const;
+
  private:
   GeneratorConfiguration config_;
 };

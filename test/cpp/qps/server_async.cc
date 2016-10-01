@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,7 +37,6 @@
 #include <mutex>
 #include <thread>
 
-#include <gflags/gflags.h>
 #include <grpc++/generic/async_generic_service.h>
 #include <grpc++/security/server_credentials.h>
 #include <grpc++/server.h>
@@ -48,7 +47,6 @@
 #include <grpc/support/alloc.h>
 #include <grpc/support/host_port.h>
 #include <grpc/support/log.h>
-#include <gtest/gtest.h>
 
 #include "src/proto/grpc/testing/services.grpc.pb.h"
 #include "test/core/util/test_config.h"
@@ -73,7 +71,8 @@ class AsyncQpsServerTest : public Server {
                          CompletionQueue *, ServerCompletionQueue *, void *)>
           request_streaming_function,
       std::function<grpc::Status(const PayloadConfig &, const RequestType *,
-                                 ResponseType *)> process_rpc)
+                                 ResponseType *)>
+          process_rpc)
       : Server(config) {
     char *server_address = NULL;
 
@@ -103,20 +102,20 @@ class AsyncQpsServerTest : public Server {
     auto process_rpc_bound =
         std::bind(process_rpc, config.payload_config(), _1, _2);
 
-    for (int i = 0; i < 10000 / num_threads; i++) {
+    for (int i = 0; i < 15000; i++) {
       for (int j = 0; j < num_threads; j++) {
         if (request_unary_function) {
           auto request_unary =
               std::bind(request_unary_function, &async_service_, _1, _2, _3,
                         srv_cqs_[j].get(), srv_cqs_[j].get(), _4);
-          contexts_.push_front(
+          contexts_.emplace_back(
               new ServerRpcContextUnaryImpl(request_unary, process_rpc_bound));
         }
         if (request_streaming_function) {
           auto request_streaming =
               std::bind(request_streaming_function, &async_service_, _1, _2,
                         srv_cqs_[j].get(), srv_cqs_[j].get(), _3);
-          contexts_.push_front(new ServerRpcContextStreamingImpl(
+          contexts_.emplace_back(new ServerRpcContextStreamingImpl(
               request_streaming, process_rpc_bound));
         }
       }
@@ -124,49 +123,49 @@ class AsyncQpsServerTest : public Server {
 
     for (int i = 0; i < num_threads; i++) {
       shutdown_state_.emplace_back(new PerThreadShutdownState());
-    }
-    for (int i = 0; i < num_threads; i++) {
       threads_.emplace_back(&AsyncQpsServerTest::ThreadFunc, this, i);
     }
   }
   ~AsyncQpsServerTest() {
-    auto deadline = GRPC_TIMEOUT_SECONDS_TO_DEADLINE(10);
-    server_->Shutdown(deadline);
     for (auto ss = shutdown_state_.begin(); ss != shutdown_state_.end(); ++ss) {
-      (*ss)->set_shutdown();
+      std::lock_guard<std::mutex> lock((*ss)->mutex);
+      (*ss)->shutdown = true;
+    }
+    // TODO (vpai): Remove this deadline and allow Shutdown to finish properly
+    auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(3);
+    server_->Shutdown(deadline);
+    for (auto cq = srv_cqs_.begin(); cq != srv_cqs_.end(); ++cq) {
+      (*cq)->Shutdown();
     }
     for (auto thr = threads_.begin(); thr != threads_.end(); thr++) {
       thr->join();
     }
     for (auto cq = srv_cqs_.begin(); cq != srv_cqs_.end(); ++cq) {
-      (*cq)->Shutdown();
       bool ok;
       void *got_tag;
       while ((*cq)->Next(&got_tag, &ok))
         ;
     }
-    while (!contexts_.empty()) {
-      delete contexts_.front();
-      contexts_.pop_front();
-    }
   }
 
  private:
-  void ThreadFunc(int rank) {
+  void ThreadFunc(int thread_idx) {
     // Wait until work is available or we are shutting down
     bool ok;
     void *got_tag;
-    while (srv_cqs_[rank]->Next(&got_tag, &ok)) {
+    while (srv_cqs_[thread_idx]->Next(&got_tag, &ok)) {
       ServerRpcContext *ctx = detag(got_tag);
       // The tag is a pointer to an RPC context to invoke
-      const bool still_going = ctx->RunNextState(ok);
-      if (!shutdown_state_[rank]->shutdown()) {
-        // this RPC context is done, so refresh it
-        if (!still_going) {
-          ctx->Reset();
-        }
-      } else {
+      // Proceed while holding a lock to make sure that
+      // this thread isn't supposed to shut down
+      std::lock_guard<std::mutex> l(shutdown_state_[thread_idx]->mutex);
+      if (shutdown_state_[thread_idx]->shutdown) {
         return;
+      }
+      const bool still_going = ctx->RunNextState(ok);
+      // if this RPC context is done, refresh it
+      if (!still_going) {
+        ctx->Reset();
       }
     }
     return;
@@ -191,7 +190,8 @@ class AsyncQpsServerTest : public Server {
     ServerRpcContextUnaryImpl(
         std::function<void(ServerContextType *, RequestType *,
                            grpc::ServerAsyncResponseWriter<ResponseType> *,
-                           void *)> request_method,
+                           void *)>
+            request_method,
         std::function<grpc::Status(const RequestType *, ResponseType *)>
             invoke_method)
         : srv_ctx_(new ServerContextType),
@@ -332,26 +332,14 @@ class AsyncQpsServerTest : public Server {
   std::unique_ptr<grpc::Server> server_;
   std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> srv_cqs_;
   ServiceType async_service_;
-  std::forward_list<ServerRpcContext *> contexts_;
+  std::vector<std::unique_ptr<ServerRpcContext>> contexts_;
 
-  class PerThreadShutdownState {
-   public:
-    PerThreadShutdownState() : shutdown_(false) {}
-
-    bool shutdown() const {
-      std::lock_guard<std::mutex> lock(mutex_);
-      return shutdown_;
-    }
-
-    void set_shutdown() {
-      std::lock_guard<std::mutex> lock(mutex_);
-      shutdown_ = true;
-    }
-
-   private:
-    mutable std::mutex mutex_;
-    bool shutdown_;
+  struct PerThreadShutdownState {
+    mutable std::mutex mutex;
+    bool shutdown;
+    PerThreadShutdownState() : shutdown(false) {}
   };
+
   std::vector<std::unique_ptr<PerThreadShutdownState>> shutdown_state_;
 };
 
@@ -388,12 +376,14 @@ static Status ProcessGenericRPC(const PayloadConfig &payload_config,
 }
 
 std::unique_ptr<Server> CreateAsyncServer(const ServerConfig &config) {
-  return std::unique_ptr<Server>(new AsyncQpsServerTest<
-      SimpleRequest, SimpleResponse, BenchmarkService::AsyncService,
-      grpc::ServerContext>(
-      config, RegisterBenchmarkService,
-      &BenchmarkService::AsyncService::RequestUnaryCall,
-      &BenchmarkService::AsyncService::RequestStreamingCall, ProcessSimpleRPC));
+  return std::unique_ptr<Server>(
+      new AsyncQpsServerTest<SimpleRequest, SimpleResponse,
+                             BenchmarkService::AsyncService,
+                             grpc::ServerContext>(
+          config, RegisterBenchmarkService,
+          &BenchmarkService::AsyncService::RequestUnaryCall,
+          &BenchmarkService::AsyncService::RequestStreamingCall,
+          ProcessSimpleRPC));
 }
 std::unique_ptr<Server> CreateAsyncGenericServer(const ServerConfig &config) {
   return std::unique_ptr<Server>(

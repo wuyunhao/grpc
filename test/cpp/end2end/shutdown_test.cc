@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,6 +33,8 @@
 
 #include <thread>
 
+#include <gtest/gtest.h>
+
 #include <grpc++/channel.h>
 #include <grpc++/client_context.h>
 #include <grpc++/create_channel.h>
@@ -40,10 +42,10 @@
 #include <grpc++/server_builder.h>
 #include <grpc++/server_context.h>
 #include <grpc/grpc.h>
+#include <grpc/support/log.h>
 #include <grpc/support/sync.h>
-#include <gtest/gtest.h>
 
-#include "src/core/support/env.h"
+#include "src/core/lib/support/env.h"
 #include "src/proto/grpc/testing/echo.grpc.pb.h"
 #include "test/core/util/port.h"
 #include "test/core/util/test_config.h"
@@ -123,7 +125,6 @@ class ShutdownTest : public ::testing::Test {
   TestServiceImpl service_;
 };
 
-// Tests zookeeper state change between two RPCs
 // TODO(ctiller): leaked objects in this test
 TEST_F(ShutdownTest, ShutdownTest) {
   ResetStub();

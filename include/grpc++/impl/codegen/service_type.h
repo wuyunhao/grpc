@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,6 +35,7 @@
 #define GRPCXX_IMPL_CODEGEN_SERVICE_TYPE_H
 
 #include <grpc++/impl/codegen/config.h>
+#include <grpc++/impl/codegen/core_codegen_interface.h>
 #include <grpc++/impl/codegen/rpc_service_method.h>
 #include <grpc++/impl/codegen/serialization_traits.h>
 #include <grpc++/impl/codegen/server_interface.h>
@@ -131,22 +132,30 @@ class Service {
   void AddMethod(RpcServiceMethod* method) { methods_.emplace_back(method); }
 
   void MarkMethodAsync(int index) {
-    if (methods_[index].get() == nullptr) {
-      gpr_log(GPR_ERROR,
-              "Cannot mark the method as 'async' because it has already been "
-              "marked as 'generic'.");
-      return;
-    }
+    GPR_CODEGEN_ASSERT(
+        methods_[index].get() != nullptr &&
+        "Cannot mark the method as 'async' because it has already been "
+        "marked as 'generic'.");
     methods_[index]->ResetHandler();
   }
 
   void MarkMethodGeneric(int index) {
-    if (methods_[index]->handler() == nullptr) {
-      gpr_log(GPR_ERROR,
-              "Cannot mark the method as 'generic' because it has already been "
-              "marked as 'async'.");
-    }
+    GPR_CODEGEN_ASSERT(
+        methods_[index]->handler() != nullptr &&
+        "Cannot mark the method as 'generic' because it has already been "
+        "marked as 'async'.");
     methods_[index].reset();
+  }
+
+  void MarkMethodStreamedUnary(int index,
+                               MethodHandler* streamed_unary_method) {
+    GPR_CODEGEN_ASSERT(methods_[index] && methods_[index]->handler() &&
+                       "Cannot mark an async or generic method Streamed Unary");
+    methods_[index]->SetHandler(streamed_unary_method);
+
+    // From the server's point of view, streamed unary is a special
+    // case of BIDI_STREAMING that has 1 read and 1 write, in that order.
+    methods_[index]->SetMethodType(::grpc::RpcMethod::BIDI_STREAMING);
   }
 
  private:

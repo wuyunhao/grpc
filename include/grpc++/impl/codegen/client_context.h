@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -41,7 +41,7 @@
 ///
 /// Context settings are only relevant to the call they are invoked with, that
 /// is to say, they aren't sticky. Some of these settings, such as the
-/// compression options, can be made persistant at channel construction time
+/// compression options, can be made persistent at channel construction time
 /// (see \a grpc::CreateCustomChannel).
 ///
 /// \warning ClientContext instances should \em not be reused across rpcs.
@@ -54,15 +54,15 @@
 #include <string>
 
 #include <grpc++/impl/codegen/config.h>
+#include <grpc++/impl/codegen/core_codegen_interface.h>
+#include <grpc++/impl/codegen/create_auth_context.h>
 #include <grpc++/impl/codegen/security/auth_context.h>
 #include <grpc++/impl/codegen/status.h>
 #include <grpc++/impl/codegen/string_ref.h>
 #include <grpc++/impl/codegen/sync.h>
 #include <grpc++/impl/codegen/time.h>
 #include <grpc/impl/codegen/compression_types.h>
-#include <grpc/impl/codegen/log.h>
 #include <grpc/impl/codegen/propagation_bits.h>
-#include <grpc/impl/codegen/time.h>
 
 struct census_context;
 struct grpc_call;
@@ -191,8 +191,8 @@ class ClientContext {
   ///
   /// \return A multimap of initial metadata key-value pairs from the server.
   const std::multimap<grpc::string_ref, grpc::string_ref>&
-  GetServerInitialMetadata() {
-    GPR_ASSERT(initial_metadata_received_);
+  GetServerInitialMetadata() const {
+    GPR_CODEGEN_ASSERT(initial_metadata_received_);
     return recv_initial_metadata_;
   }
 
@@ -203,7 +203,7 @@ class ClientContext {
   ///
   /// \return A multimap of metadata trailing key-value pairs from the server.
   const std::multimap<grpc::string_ref, grpc::string_ref>&
-  GetServerTrailingMetadata() {
+  GetServerTrailingMetadata() const {
     // TODO(yangg) check finished
     return trailing_metadata_;
   }
@@ -220,15 +220,24 @@ class ClientContext {
     deadline_ = deadline_tp.raw_time();
   }
 
+  /// EXPERIMENTAL: Set this request to be idempotent
+  void set_idempotent(bool idempotent) { idempotent_ = idempotent; }
+
+  /// EXPERIMENTAL: Set this request to be cacheable
+  void set_cacheable(bool cacheable) { cacheable_ = cacheable; }
+
+  /// EXPERIMENTAL: Trigger fail-fast or not on this request
+  void set_fail_fast(bool fail_fast) { fail_fast_ = fail_fast; }
+
 #ifndef GRPC_CXX0X_NO_CHRONO
   /// Return the deadline for the client call.
-  std::chrono::system_clock::time_point deadline() {
+  std::chrono::system_clock::time_point deadline() const {
     return Timespec2Timepoint(deadline_);
   }
 #endif  // !GRPC_CXX0X_NO_CHRONO
 
   /// Return a \a gpr_timespec representation of the client call's deadline.
-  gpr_timespec raw_deadline() { return deadline_; }
+  gpr_timespec raw_deadline() const { return deadline_; }
 
   /// Set the per call authority header (see
   /// https://tools.ietf.org/html/rfc7540#section-8.1.2.3).
@@ -237,7 +246,12 @@ class ClientContext {
   /// Return the authentication context for this client call.
   ///
   /// \see grpc::AuthContext.
-  std::shared_ptr<const AuthContext> auth_context() const;
+  std::shared_ptr<const AuthContext> auth_context() const {
+    if (auth_context_.get() == nullptr) {
+      auth_context_ = CreateAuthContext(call_);
+    }
+    return auth_context_;
+  }
 
   /// Set credentials for the client call.
   ///
@@ -258,7 +272,7 @@ class ClientContext {
 
   /// Set \a algorithm to be the compression algorithm used for the client call.
   ///
-  /// \param algorith The compression algorithm used for the client call.
+  /// \param algorithm The compression algorithm used for the client call.
   void set_compression_algorithm(grpc_compression_algorithm algorithm);
 
   /// Return the peer uri in a string.
@@ -294,6 +308,10 @@ class ClientContext {
   };
   static void SetGlobalCallbacks(GlobalCallbacks* callbacks);
 
+  // Should be used for framework-level extensions only.
+  // Applications never need to call this method.
+  grpc_call* c_call() { return call_; }
+
  private:
   // Disallow copy and assign.
   ClientContext(const ClientContext&);
@@ -324,12 +342,21 @@ class ClientContext {
                                   const InputMessage& request,
                                   OutputMessage* result);
 
-  grpc_call* call() { return call_; }
+  grpc_call* call() const { return call_; }
   void set_call(grpc_call* call, const std::shared_ptr<Channel>& channel);
+
+  uint32_t initial_metadata_flags() const {
+    return (idempotent_ ? GRPC_INITIAL_METADATA_IDEMPOTENT_REQUEST : 0) |
+           (fail_fast_ ? 0 : GRPC_INITIAL_METADATA_IGNORE_CONNECTIVITY) |
+           (cacheable_ ? GRPC_INITIAL_METADATA_CACHEABLE_REQUEST : 0);
+  }
 
   grpc::string authority() { return authority_; }
 
   bool initial_metadata_received_;
+  bool fail_fast_;
+  bool idempotent_;
+  bool cacheable_;
   std::shared_ptr<Channel> channel_;
   grpc::mutex mu_;
   grpc_call* call_;

@@ -43,8 +43,6 @@
 #include <grpc/support/useful.h>
 #include "test/core/end2end/cq_verifier.h"
 
-enum { TIMEOUT = 200000 };
-
 static void *tag(intptr_t t) { return (void *)t; }
 
 static grpc_end2end_test_fixture begin_test(grpc_end2end_test_config config,
@@ -75,9 +73,9 @@ static void drain_cq(grpc_completion_queue *cq) {
 static void shutdown_server(grpc_end2end_test_fixture *f) {
   if (!f->server) return;
   grpc_server_shutdown_and_notify(f->server, f->cq, tag(1000));
-  GPR_ASSERT(grpc_completion_queue_pluck(f->cq, tag(1000),
-                                         GRPC_TIMEOUT_SECONDS_TO_DEADLINE(5),
-                                         NULL).type == GRPC_OP_COMPLETE);
+  GPR_ASSERT(grpc_completion_queue_pluck(
+                 f->cq, tag(1000), GRPC_TIMEOUT_SECONDS_TO_DEADLINE(5), NULL)
+                 .type == GRPC_OP_COMPLETE);
   grpc_server_destroy(f->server);
   f->server = NULL;
 }
@@ -124,6 +122,7 @@ static void simple_request_body(grpc_end2end_test_fixture f) {
   grpc_metadata_array_init(&request_metadata_recv);
   grpc_call_details_init(&call_details);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_SEND_INITIAL_METADATA;
   op->data.send_initial_metadata.count = 0;
@@ -154,9 +153,10 @@ static void simple_request_body(grpc_end2end_test_fixture f) {
       grpc_server_request_call(f.server, &s, &call_details,
                                &request_metadata_recv, f.cq, f.cq, tag(101));
   GPR_ASSERT(GRPC_CALL_OK == error);
-  cq_expect_completion(cqv, tag(101), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(101), 1);
   cq_verify(cqv);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_SEND_INITIAL_METADATA;
   op->data.send_initial_metadata.count = 0;
@@ -178,8 +178,8 @@ static void simple_request_body(grpc_end2end_test_fixture f) {
   error = grpc_call_start_batch(s, ops, (size_t)(op - ops), tag(102), NULL);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
-  cq_expect_completion(cqv, tag(102), 1);
-  cq_expect_completion(cqv, tag(1), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(102), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(1), 1);
   cq_verify(cqv);
 
   GPR_ASSERT(status == GRPC_STATUS_UNIMPLEMENTED);
@@ -270,6 +270,7 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
                                  f.server, &s1, &call_details,
                                  &request_metadata_recv, f.cq, f.cq, tag(101)));
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_SEND_INITIAL_METADATA;
   op->data.send_initial_metadata.count = 0;
@@ -283,6 +284,7 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
   error = grpc_call_start_batch(c1, ops, (size_t)(op - ops), tag(301), NULL);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_RECV_STATUS_ON_CLIENT;
   op->data.recv_status_on_client.trailing_metadata = &trailing_metadata_recv1;
@@ -300,6 +302,7 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
   error = grpc_call_start_batch(c1, ops, (size_t)(op - ops), tag(302), NULL);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_SEND_INITIAL_METADATA;
   op->data.send_initial_metadata.count = 0;
@@ -313,6 +316,7 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
   error = grpc_call_start_batch(c2, ops, (size_t)(op - ops), tag(401), NULL);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_RECV_STATUS_ON_CLIENT;
   op->data.recv_status_on_client.trailing_metadata = &trailing_metadata_recv2;
@@ -354,6 +358,7 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
   }
   GPR_ASSERT(live_call == 300 || live_call == 400);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_SEND_INITIAL_METADATA;
   op->data.send_initial_metadata.count = 0;
@@ -375,19 +380,20 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
   error = grpc_call_start_batch(s1, ops, (size_t)(op - ops), tag(102), NULL);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
-  cq_expect_completion(cqv, tag(102), 1);
-  cq_expect_completion(cqv, tag(live_call + 2), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(102), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(live_call + 2), 1);
   /* first request is finished, we should be able to start the second */
   live_call = (live_call == 300) ? 400 : 300;
-  cq_expect_completion(cqv, tag(live_call + 1), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(live_call + 1), 1);
   cq_verify(cqv);
 
   GPR_ASSERT(GRPC_CALL_OK == grpc_server_request_call(
                                  f.server, &s2, &call_details,
                                  &request_metadata_recv, f.cq, f.cq, tag(201)));
-  cq_expect_completion(cqv, tag(201), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(201), 1);
   cq_verify(cqv);
 
+  memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_SEND_INITIAL_METADATA;
   op->data.send_initial_metadata.count = 0;
@@ -409,8 +415,8 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
   error = grpc_call_start_batch(s2, ops, (size_t)(op - ops), tag(202), NULL);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
-  cq_expect_completion(cqv, tag(live_call + 2), 1);
-  cq_expect_completion(cqv, tag(202), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(live_call + 2), 1);
+  CQ_EXPECT_COMPLETION(cqv, tag(202), 1);
   cq_verify(cqv);
 
   cq_verifier_destroy(cqv);
@@ -436,3 +442,5 @@ static void test_max_concurrent_streams(grpc_end2end_test_config config) {
 void max_concurrent_streams(grpc_end2end_test_config config) {
   test_max_concurrent_streams(config);
 }
+
+void max_concurrent_streams_pre_init(void) {}

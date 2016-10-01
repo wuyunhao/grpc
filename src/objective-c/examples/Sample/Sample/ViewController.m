@@ -1,6 +1,6 @@
 /*
  *
- * Copyright 2015-2016, Google Inc.
+ * Copyright 2015, Google Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -66,9 +66,9 @@
 
   // Same example call using the generic gRPC client library:
 
-  ProtoMethod *method = [[ProtoMethod alloc] initWithPackage:@"grpc.testing"
-                                                     service:@"TestService"
-                                                      method:@"UnaryCall"];
+  GRPCProtoMethod *method = [[GRPCProtoMethod alloc] initWithPackage:@"grpc.testing"
+                                                             service:@"TestService"
+                                                              method:@"UnaryCall"];
 
   GRXWriter *requestsWriter = [GRXWriter writerWithValue:[request data]];
 
